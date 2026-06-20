@@ -1,0 +1,67 @@
+# A clean clone runs with `docker compose up` and no credentials of any kind.
+#
+# Every value here is a throwaway local default. Nothing in this file is a real
+# secret, and nothing real is ever committed — deployed environments inject
+# their own values for the same variable names (see .env.example).
+#
+# Google and Slack are deliberately left unset: both integrations are dormant
+# when unconfigured, which is what makes a key-free first run possible.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nivara_owner
+      POSTGRES_PASSWORD: local_dev_only
+      POSTGRES_DB: nivara
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nivara_owner -d nivara']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    ports:
+      - '${PORT:-3000}:3000'
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      # DATABASE_URL is deliberately NOT set yet. Nothing reads it, and the only
+      # role that exists so far is the database owner — which holds BYPASSRLS.
+      # Handing the runtime an owner credential would make row-level security
+      # silently do nothing locally, hiding every tenant-isolation bug until
+      # production, and local compose is exactly where a reviewer kicks the
+      # tyres on isolation. The ticket that introduces Prisma adds the init SQL
+      # creating the non-BYPASSRLS app_user, points the runtime at that role,
+      # and keeps the owner credential to the migrate step alone.
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Liveness only — deliberately dependency-free.
+      test:
+        ['CMD', 'node', '-e', "require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

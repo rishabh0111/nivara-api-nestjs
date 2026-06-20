@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Real configuration never gets committed. `.env.example` documents the keys.
+.env
+.env.*
+!.env.example
+
+# Generated — emitted from the code with `npm run openapi:emit`.
+openapi.json
+
+.DS_Store
+*.log
+.idea/
+.vscode/
