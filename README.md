@@ -9,15 +9,41 @@ A multitenant, two-sided customer-support helpdesk API. Every record belongs to 
 docker compose up
 ```
 
-That is the whole first run. No credentials, no keys, no manual steps — a clean clone comes up on `http://localhost:3000`. Optional integrations (Google sign-in, Slack ingestion) are dormant when unconfigured rather than fatal, which is what makes a key-free start possible.
+That is the whole first run. No credentials, no keys, no manual steps — a clean clone migrates the schema, seeds two tenants, and comes up on `http://localhost:3000`. Optional integrations (Google sign-in, Slack ingestion) are dormant when unconfigured rather than fatal, which is what makes a key-free start possible.
 
 For a local run outside compose:
 
 ```bash
 npm install
-cp .env.example .env   # every key is documented; none is required yet
+cp .env.example .env   # DATABASE_URL is the only required key
+docker compose up -d postgres
+npm run db:migrate && npm run db:seed
 npm run start:dev
 ```
+
+## Tenant isolation
+
+Isolation is a property of the database, not a discipline in application code. Every tenant-scoped table has Postgres row-level security enabled and forced, with a policy predicated on a transaction-local setting. A forgotten `where` in a service cannot leak another tenant's rows, because Postgres never returns them.
+
+Two roles make that guarantee real:
+
+| Role | | |
+|---|---|---|
+| `nivara_owner` | Superuser locally, `neon_superuser` (so `BYPASSRLS`) on Neon | Migrations and seeding only, over the **direct** endpoint. `MIGRATE_DATABASE_URL`. |
+| `app_user` | `NOSUPERUSER NOBYPASSRLS`, and not the table owner | Every request-path query, over the **pooled** endpoint. `DATABASE_URL`. |
+
+The owner credential is absent from the running process — the application refuses to boot in production if it finds one — because row-level security is only a guarantee while nothing in the process can bypass it. Locally, [docker/postgres/init](docker/postgres/init) creates the same split so development exercises the real policies rather than silently bypassing them.
+
+Context is armed by `TenancyService.withTenant()`, which opens a Prisma interactive transaction and issues `set_config(..., true)` as its first statement — transaction-local, never session-level, because a session-level `SET` survives the transaction and leaks onto the next client under transaction-mode pooling. It arms the actor (`app.current_actor_kind`, `app.current_actor_id`) that the audit triggers read as well; an absent actor raises rather than defaulting.
+
+```ts
+const tickets = await tenancy.withTenant(
+  { tenantId, actor: { kind: 'user', id: userId } },
+  (tx) => tx.ticket.findMany(),
+);
+```
+
+Background: [docs/research/rls-neon-pooling.md](docs/research/rls-neon-pooling.md).
 
 ## What is here
 
@@ -46,12 +72,16 @@ Every endpoint obeys these, and they ship as reusable primitives rather than per
 
 ```bash
 npm run typecheck     # tsc --noEmit
-npm test              # unit + e2e
+npm test              # everything — needs a migrated, seeded Postgres
+npm run test:unit     # the subset that opens no connection
+npm run test:int      # the isolation proof alone
 npm run lint
 npm run openapi:emit  # writes openapi.json
 ```
 
 Tests run at two seams and no others: the booted application driven over its public protocols (Supertest for HTTP), and — once the scheduler exists — a directly-invokable scheduler tick. Tests do not mock the data layer. The load-bearing invariants in this system live in SQL rather than in application code, so a test that mocks Postgres proves nothing about them.
+
+That is why the `*.int-spec.ts` files are in the **default** run rather than behind an opt-in flag. They are the only thing that demonstrates isolation actually holds, and they connect as `app_user` — point them at the owner instead and every one of their assertions collapses. A suite that stayed green while RLS was disabled would be worse than no suite. `test:unit` exists for the tight loop, not as the thing CI runs.
 
 ## Configuration
 

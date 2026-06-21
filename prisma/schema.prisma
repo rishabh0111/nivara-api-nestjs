@@ -1,0 +1,78 @@
+// The tenancy spine.
+//
+// Every model below is tenant-scoped, and that scoping is enforced in Postgres
+// by row-level security rather than by discipline in application code — see the
+// RLS migration for the policies, and `src/tenancy/tenancy.service.ts` for the
+// helper that arms the transaction-local settings they read.
+//
+// `Tenant` itself carries no `tenantId`: its policy predicates on `id`, so a
+// query inside one tenant's context sees exactly one Tenant row — its own.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  users    User[]
+  contacts Contact[]
+
+  @@map("tenant")
+}
+
+/// A User's authority within their Tenant. There are exactly two.
+enum UserRole {
+  agent
+  admin
+
+  @@map("user_role")
+}
+
+/// Internal staff of exactly one Tenant. Tenant-local by design: the same real
+/// person working for two Tenants is two User rows, which is what lets every
+/// table be tenant-scoped with no cross-tenant exception (ADR-0001).
+model User {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  email     String
+  name      String
+  role      UserRole @default(agent)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // The login lookup key. Uniqueness is per tenant, never global.
+  @@unique([tenantId, email])
+  @@map("user")
+}
+
+/// The tenant's end customer — the party a Ticket is from. May be unverified
+/// (created from an anonymous widget visitor) or verified (portal OAuth or a
+/// confirmed email).
+model Contact {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  email     String?
+  name      String?
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // An anonymous Contact has no email, and Postgres treats NULLs as distinct,
+  // so this constrains identified Contacts without collapsing anonymous ones.
+  @@unique([tenantId, email])
+  @@map("contact")
+}

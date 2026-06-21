@@ -36,9 +36,16 @@ export const envSchema = z
       .default('development'),
     PORT: port.default(3000),
 
-    // Infrastructure. Optional here because nothing reads them yet; the ticket
-    // that introduces Prisma makes DATABASE_URL required.
-    DATABASE_URL: optionalString,
+    // The runtime credential: the least-privileged, non-BYPASSRLS `app_user`
+    // over the pooled endpoint. Required — there is no meaningful application
+    // without it, and booting without one only defers the failure.
+    DATABASE_URL: z.string().trim().min(1),
+
+    // The owner credential, over the direct endpoint. Read by the Prisma CLI
+    // via `prisma.config.ts`, and by nothing in the application — see the
+    // production check below.
+    MIGRATE_DATABASE_URL: optionalString,
+
     REDIS_URL: optionalString,
 
     // Secrets for surfaces not yet built. Same reasoning as above — the ticket
@@ -82,6 +89,23 @@ export const envSchema = z
       ['SLACK_SIGNING_SECRET', 'SLACK_BOT_TOKEN'],
       [!!env.SLACK_SIGNING_SECRET, !!env.SLACK_BOT_TOKEN],
     );
+
+    // Row-level security is only a guarantee while the running process holds no
+    // credential that can bypass it. The owner role does — it is a superuser
+    // locally and a `neon_superuser` (so `BYPASSRLS`) on Neon — so its presence
+    // in a deployed process is a misconfiguration serious enough to refuse to
+    // boot on, rather than a latent one discovered by a cross-tenant leak.
+    //
+    // Development and test are exempt: there, one `.env` legitimately serves
+    // both the application and the migration CLI.
+    if (env.NODE_ENV === 'production' && env.MIGRATE_DATABASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'MIGRATE_DATABASE_URL must not be present in a production process. It is the owner credential, which bypasses row-level security; supply it to the release-phase migrate step alone.',
+        path: ['MIGRATE_DATABASE_URL'],
+      });
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;

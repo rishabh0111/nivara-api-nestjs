@@ -15,3 +15,6 @@ openapi.json
 *.log
 .idea/
 .vscode/
+
+# Generated from prisma/schema.prisma by `prisma generate`.
+/src/generated/

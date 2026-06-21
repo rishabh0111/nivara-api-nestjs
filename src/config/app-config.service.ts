@@ -25,6 +25,17 @@ export class AppConfigService {
     return this.get('PORT');
   }
 
+  /**
+   * The runtime connection string — always the non-`BYPASSRLS` `app_user`.
+   *
+   * There is deliberately no accessor for `MIGRATE_DATABASE_URL`. The owner
+   * credential belongs to the Prisma CLI, and giving the application a typed
+   * way to read it would be the first step toward something using it.
+   */
+  get databaseUrl(): string {
+    return this.get('DATABASE_URL');
+  }
+
   get isProduction(): boolean {
     return this.nodeEnv === 'production';
   }

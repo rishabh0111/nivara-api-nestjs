@@ -18,6 +18,11 @@ services:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Creates the non-BYPASSRLS `app_user` on first boot, so local development
+      # exercises row-level security exactly as the deployed runtime does.
+      # `z` relabels for SELinux hosts (Fedora, RHEL) and is ignored elsewhere;
+      # without it the container cannot read the directory at all.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro,z
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U nivara_owner -d nivara']
       interval: 5s
@@ -34,6 +39,24 @@ services:
       timeout: 5s
       retries: 10
 
+  # Schema and seed, as their own short-lived step — the only place the owner
+  # credential appears. It runs to completion and exits before `api` starts.
+  migrate:
+    build:
+      context: .
+      # The build stage still has the dev dependencies — the Prisma CLI and the
+      # TypeScript seed live there, and stay out of the runtime image.
+      target: build
+    command: ['sh', '-c', 'npx prisma migrate deploy && npx prisma db seed']
+    environment:
+      # Owner role, direct (unpooled) connection. Creating tables and seeding
+      # two tenants are both things every RLS policy would refuse, so this step
+      # is meant to bypass them — and it is the only step that may.
+      MIGRATE_DATABASE_URL: postgres://nivara_owner:local_dev_only@postgres:5432/nivara
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: .
     ports:
@@ -41,20 +64,18 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3000
-      # DATABASE_URL is deliberately NOT set yet. Nothing reads it, and the only
-      # role that exists so far is the database owner — which holds BYPASSRLS.
-      # Handing the runtime an owner credential would make row-level security
-      # silently do nothing locally, hiding every tenant-isolation bug until
-      # production, and local compose is exactly where a reviewer kicks the
-      # tyres on isolation. The ticket that introduces Prisma adds the init SQL
-      # creating the non-BYPASSRLS app_user, points the runtime at that role,
-      # and keeps the owner credential to the migrate step alone.
+      # The least-privileged `app_user`, never the owner. MIGRATE_DATABASE_URL
+      # is absent from this service on purpose: row-level security is only a
+      # guarantee if the running process holds no credential that can bypass it.
+      DATABASE_URL: postgres://app_user:local_dev_only@postgres:5432/nivara
       REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       # Liveness only — deliberately dependency-free.
       test:

@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { bootAppUnderCurrentEnv } from './helpers/boot';
 import { withEnv } from './helpers/env';
+import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
 
 /**
  * The key-free `docker compose up` path is a hard requirement, not a
@@ -32,11 +33,14 @@ describe('boot tolerance', () => {
     });
   });
 
-  it('boots with no environment configured at all', async () => {
+  it('boots on the database connection string alone', async () => {
+    // Everything else absent. This is the key-free path: compose supplies the
+    // connection string itself, as a throwaway local default, so a clean clone
+    // still needs no credentials from the developer.
     await withEnv(
       {
         ...ABSENT,
-        DATABASE_URL: undefined,
+        DATABASE_URL: UNREACHABLE_DATABASE_URL,
         REDIS_URL: undefined,
         JWT_SECRET: undefined,
         WIDGET_SESSION_SECRET: undefined,

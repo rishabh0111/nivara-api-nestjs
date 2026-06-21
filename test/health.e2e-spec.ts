@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { bootApp, bootAppUnderCurrentEnv } from './helpers/boot';
 import { withEnv } from './helpers/env';
+import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
 
 describe('GET /health', () => {
   let app: INestApplication;
@@ -24,12 +25,18 @@ describe('GET /health', () => {
     });
   });
 
-  it('answers with Postgres and Redis entirely unconfigured', async () => {
-    // The keep-warm ping must succeed whenever the process is alive. Booting
-    // with no DATABASE_URL and no REDIS_URL and still answering 200 is the
-    // strongest available proof that liveness reaches neither.
+  it('answers with Postgres unreachable and Redis unconfigured', async () => {
+    // The keep-warm ping must succeed whenever the process is alive. Pointing
+    // DATABASE_URL at a port nothing is listening on, dropping REDIS_URL, and
+    // still answering 200 is the strongest available proof that liveness
+    // reaches neither. (The connection string itself is required now — the
+    // tenancy spine needs one — so the test denies the connection, not the
+    // configuration.)
     await withEnv(
-      { DATABASE_URL: undefined, REDIS_URL: undefined },
+      {
+        DATABASE_URL: UNREACHABLE_DATABASE_URL,
+        REDIS_URL: undefined,
+      },
       async () => {
         const isolated = await bootAppUnderCurrentEnv();
 
