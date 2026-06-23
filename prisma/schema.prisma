@@ -24,8 +24,9 @@ model Tenant {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  users    User[]
-  contacts Contact[]
+  users         User[]
+  contacts      Contact[]
+  refreshTokens RefreshToken[]
 
   @@map("tenant")
 }
@@ -47,14 +48,63 @@ model User {
   email     String
   name      String
   role      UserRole @default(agent)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  /// Argon2id. Nullable because membership precedes credentials: an invite
+  /// creates the User, and only accepting it sets a password. A User with no
+  /// hash cannot sign in — there is nothing to compare against.
+  passwordHash String?  @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
 
   // The login lookup key. Uniqueness is per tenant, never global.
   @@unique([tenantId, email])
   @@map("user")
+}
+
+/// One issued refresh token, stored as a hash and never as itself.
+///
+/// Rows are kept after rotation rather than deleted: an already-rotated row is
+/// exactly what makes replay detectable. Presenting one is a theft signal, and
+/// the response is to revoke every row sharing its `familyId` — the thief and
+/// the victim both lose the session, which is the intended outcome.
+model RefreshToken {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+
+  /// `sha256(token)`, hex. The raw token exists only in the response cookie.
+  /// Unhashed it would make a database read a set of usable credentials.
+  tokenHash String @map("token_hash")
+
+  /// Every token descended from one sign-in shares this. Rotation extends a
+  /// family; replay destroys it.
+  familyId String @map("family_id") @db.Uuid
+
+  /// The sliding 30-day window. Refreshing issues a new row with a new one.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  /// The 90-day cap, copied unchanged onto every successor. Rotation cannot
+  /// extend a session past the moment it began plus 90 days.
+  familyExpiresAt DateTime @map("family_expires_at") @db.Timestamptz(3)
+
+  /// Set when this token is spent (rotated) or revoked. A row with a value
+  /// here is no longer usable; presenting one that was *rotated* is replay.
+  rotatedAt DateTime? @map("rotated_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Presented tokens are looked up by hash alone. Unique per tenant rather
+  // than globally: the hash is the lookup key inside an armed context, and RLS
+  // already scopes the read.
+  @@unique([tenantId, tokenHash])
+  @@index([tenantId, familyId])
+  @@map("refresh_token")
 }
 
 /// The tenant's end customer — the party a Ticket is from. May be unverified

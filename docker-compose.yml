@@ -69,6 +69,9 @@ services:
       # guarantee if the running process holds no credential that can bypass it.
       DATABASE_URL: postgres://app_user:local_dev_only@postgres:5432/nivara
       REDIS_URL: redis://redis:6379
+      # Throwaway, like every other value in this file. A deployed environment
+      # injects a real one; this exists so a clean clone boots with no secrets.
+      JWT_SECRET: local_dev_only_jwt_secret_not_for_real_use
     depends_on:
       postgres:
         condition: service_healthy

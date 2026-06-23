@@ -36,6 +36,11 @@ export class AppConfigService {
     return this.get('DATABASE_URL');
   }
 
+  /** Signs and verifies staff access tokens. Symmetric — HS256, one process. */
+  get jwtSecret(): string {
+    return this.get('JWT_SECRET');
+  }
+
   get isProduction(): boolean {
     return this.nodeEnv === 'production';
   }

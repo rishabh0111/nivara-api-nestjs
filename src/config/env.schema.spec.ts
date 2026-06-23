@@ -1,13 +1,14 @@
 import { validateEnv } from './env.schema';
 
 /**
- * The database connection is the one thing the application cannot invent, so
- * every case below starts from it. This is still the key-free path: compose
- * supplies this value itself, as a throwaway local default, and the developer
- * supplies no credentials of any kind.
+ * The two things the application cannot invent: somewhere to store data, and a
+ * key to sign sessions with. Every case below starts from them. This is still
+ * the key-free path — compose supplies both itself, as throwaway local
+ * defaults, and the developer supplies no credentials of any kind.
  */
 const MINIMUM = {
   DATABASE_URL: 'postgres://app_user:pw@localhost:5432/nivara',
+  JWT_SECRET: 'a-test-secret-of-at-least-thirty-two-characters',
 };
 
 const validate = (overrides: Record<string, unknown> = {}) =>
@@ -22,7 +23,27 @@ describe('validateEnv', () => {
   it('refuses to boot without a database', () => {
     // Nothing meaningful works without it, so failing here beats failing at the
     // first query with a stack trace that names neither cause nor fix.
-    expect(() => validateEnv({})).toThrow(/DATABASE_URL/);
+    expect(() => validateEnv({ JWT_SECRET: MINIMUM.JWT_SECRET })).toThrow(
+      /DATABASE_URL/,
+    );
+  });
+
+  describe('the token-signing secret', () => {
+    it('refuses to boot without one', () => {
+      expect(() => validateEnv({ DATABASE_URL: MINIMUM.DATABASE_URL })).toThrow(
+        /JWT_SECRET/,
+      );
+    });
+
+    /**
+     * HS256 accepts a key of any length, so a short secret produces no error
+     * anywhere downstream — it produces a forgeable token, which is a failure
+     * nothing observes until it is exploited. The floor is the only place that
+     * can be caught.
+     */
+    it('refuses one too short to be worth signing with', () => {
+      expect(() => validate({ JWT_SECRET: 'short' })).toThrow(/JWT_SECRET/);
+    });
   });
 
   it('leaves Google and Slack dormant when entirely absent', () => {

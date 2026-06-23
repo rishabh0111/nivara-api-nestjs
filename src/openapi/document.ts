@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { DocumentBuilder, OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
+import { REFRESH_COOKIE } from 'src/auth/refresh-cookie';
 import { ErrorResponse } from 'src/common/errors/error-response.dto';
 import { PaginationQuery } from 'src/common/pagination/pagination-query.dto';
 
@@ -34,6 +35,30 @@ export const buildOpenApiDocument = (app: INestApplication): OpenAPIObject =>
       .setVersion('0.1.0')
       .addTag('health', 'Liveness')
       .addTag('meta', 'Published contracts — error codes and scopes')
+      .addTag('auth', 'Sign-in, session refresh, and the current principal')
+      // The default scheme. Every operation without an explicit `@Public()` is
+      // authenticated, so declaring it globally matches what the guard does
+      // rather than restating it per operation.
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description:
+            'A 15-minute staff access token from `POST /auth/sign-in`. Hold it in memory and refresh before it expires.',
+        },
+        'bearer',
+      )
+      .addCookieAuth(
+        REFRESH_COOKIE,
+        {
+          type: 'apiKey',
+          in: 'cookie',
+          description:
+            'The httpOnly refresh cookie. Set by sign-in, sent automatically by the browser, and readable by no script — including this page.',
+        },
+        REFRESH_COOKIE,
+      )
       .build(),
     {
       // Registered so the shared kit's schemas appear in the document even

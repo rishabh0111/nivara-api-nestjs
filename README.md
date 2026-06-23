@@ -15,7 +15,7 @@ For a local run outside compose:
 
 ```bash
 npm install
-cp .env.example .env   # DATABASE_URL is the only required key
+cp .env.example .env   # DATABASE_URL and JWT_SECRET are the required keys
 docker compose up -d postgres
 npm run db:migrate && npm run db:seed
 npm run start:dev
@@ -49,10 +49,37 @@ Background: [docs/research/rls-neon-pooling.md](docs/research/rls-neon-pooling.m
 
 | Endpoint | |
 |---|---|
+| `POST /auth/sign-in` | Email and password, scoped to `(tenantId, email)`. Returns a 15-minute access token; sets the refresh cookie. |
+| `POST /auth/refresh` | Exchanges the refresh cookie for a new access token, rotating it. |
+| `POST /auth/sign-out` | Revokes the token family and clears the cookie. |
+| `GET /auth/me` | The authenticated principal, read through the tenant its own token armed. |
 | `GET /health` | Liveness. Dependency-free — touches neither Postgres nor Redis, so a keep-warm ping never fails on a dependency blip. A readiness endpoint arrives alongside the dependencies it would check. |
 | `GET /meta/error-codes` | The closed catalog of machine-readable error codes. |
 | `GET /docs` | Browsable OpenAPI documentation. |
 | `GET /openapi.json` | The generated OpenAPI document, for client generation. |
+
+## Authentication
+
+An invited User signs in with email and password. The lookup key is `(tenantId, email)`, never email alone — the same address at two Tenants is two Users with two passwords, which is what lets every table be tenant-scoped with no cross-tenant exception ([ADR-0001](docs/adr/0001-tenant-local-identity-model.md)).
+
+A session is two halves, and they are deliberately different kinds of thing:
+
+| | Access token | Refresh token |
+|---|---|---|
+| Form | JWT, HS256, claims `sub` / `tenantId` / `role` | Opaque 256-bit random — no claims to read |
+| Lifetime | 15 minutes | 30-day sliding, 90-day absolute cap |
+| Held | In memory, sent as `Authorization: Bearer` | httpOnly cookie, scoped to `/auth` |
+| Stored | Nowhere — it is self-contained | `sha256` only; the raw value is unrecoverable |
+
+The `tenantId` claim is the sole authority for which tenant a request acts in, and what arms `withTenant()`. It is never read from a body, a path, or a header — the one exception is sign-in itself, where there is no credential yet to read it from, and naming a tenant there grants nothing without a password.
+
+Refresh tokens **rotate on every use** and belong to a family. Presenting an already-rotated token means two parties hold the same secret with nothing to tell them apart, so the whole family is revoked: theft costs both parties the session rather than granting the thief a parallel one. The legitimate client signs in again — and so does nobody else.
+
+Authentication resolves any credential into a uniform `RequestPrincipal`. Service tokens will add a second branch at that one seam and converge on the same shape, so there is never a second authorization path to drift out of sync with the first.
+
+Every route is authenticated unless it carries `@Public()`. Forgetting the decorator returns 401 and gets reported; the inverse default would publish a tenant's data with nothing to notice.
+
+Seeded logins for the key-free demo path are printed by `npm run db:seed`.
 
 ## API conventions
 

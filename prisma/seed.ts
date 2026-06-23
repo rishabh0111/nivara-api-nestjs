@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
+import * as argon2 from 'argon2';
 import { PrismaClient } from '../src/generated/prisma/client';
 
 /**
@@ -19,6 +20,17 @@ import { PrismaClient } from '../src/generated/prisma/client';
  * single tenant context could do.
  */
 
+/**
+ * One password, shared by every seeded staff member, printed on every run.
+ *
+ * The key-free demo path is the point: someone evaluating this API can sign in
+ * without configuring an OAuth provider. It is safe to commit because it only
+ * ever meets seeded `.test` accounts in a throwaway database — and it is long
+ * enough to clear the sign-in DTO's twelve-character floor, so the demo
+ * credentials are not a special case the validation has to bend for.
+ */
+const SEED_PASSWORD = 'nivara-demo-password';
+
 const SEED = {
   meridian: {
     slug: 'meridian',
@@ -26,6 +38,11 @@ const SEED = {
     users: [
       { email: 'admin@meridian.test', name: 'Ada Okonjo', role: 'admin' },
       { email: 'agent@meridian.test', name: 'Ravi Menon', role: 'agent' },
+      // Deliberately the same address as a Sortwood User below. Tenant-local
+      // identity (ADR-0001) is only demonstrable if some address actually
+      // exists in two tenants: these are two Users, two rows, two passwords,
+      // and neither login can reach the other.
+      { email: 'dual@example.test', name: 'Iris Vance', role: 'agent' },
     ],
     contacts: [
       { email: 'jules@example.test', name: 'Jules Ferrand', verified: true },
@@ -37,6 +54,10 @@ const SEED = {
     name: 'Sortwood',
     users: [
       { email: 'admin@sortwood.test', name: 'Petra Lindqvist', role: 'admin' },
+      // The other half of the shared-address pair. `admin` here, `agent` at
+      // Meridian — so a login that resolved the wrong row would be visible in
+      // the role it handed back, not just in the id.
+      { email: 'dual@example.test', name: 'Iris Vance', role: 'admin' },
     ],
     contacts: [
       { email: 'sam@example.test', name: 'Sam Whitlock', verified: true },
@@ -61,11 +82,19 @@ const seedTenant = async (
     create: { slug: spec.slug, name: spec.name },
   });
 
+  // Hashed per tenant rather than once for the whole seed: argon2 salts each
+  // hash, so two Users sharing a password must not share a hash — otherwise
+  // the seed would demonstrate exactly the mistake the storage format exists
+  // to prevent.
   for (const user of spec.users) {
+    const passwordHash = await argon2.hash(SEED_PASSWORD, {
+      type: argon2.argon2id,
+    });
+
     await prisma.user.upsert({
       where: { tenantId_email: { tenantId: tenant.id, email: user.email } },
-      update: { name: user.name, role: user.role },
-      create: { tenantId: tenant.id, ...user },
+      update: { name: user.name, role: user.role, passwordHash },
+      create: { tenantId: tenant.id, ...user, passwordHash },
     });
   }
 
@@ -95,6 +124,12 @@ const main = async (): Promise<void> => {
   for (const spec of Object.values(SEED)) {
     await seedTenant(spec);
   }
+
+  // Printed rather than documented in a README that would drift: signing in
+  // needs the tenant's id, and only this run knows it.
+  console.log(
+    `\nSign in at POST /auth/sign-in with any seeded address and password ${JSON.stringify(SEED_PASSWORD)}, quoting the tenant id printed above.`,
+  );
 };
 
 main()

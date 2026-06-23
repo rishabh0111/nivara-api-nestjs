@@ -22,3 +22,14 @@ config();
  * against this placeholder rather than pass vacuously.
  */
 process.env['DATABASE_URL'] ??= UNREACHABLE_DATABASE_URL;
+
+/**
+ * `JWT_SECRET` became required with staff authentication, for the same reason
+ * and with the same caveat: booting the application needs one, and no test
+ * should depend on a developer having written a local `.env`.
+ *
+ * Tests that care about the signature — that a token signed with another key
+ * is rejected — supply their own key rather than leaning on this one, so its
+ * only job is to clear the length floor.
+ */
+process.env['JWT_SECRET'] ??= 'test-only-jwt-secret-at-least-32-chars-long';

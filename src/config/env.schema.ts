@@ -48,9 +48,17 @@ export const envSchema = z
 
     REDIS_URL: optionalString,
 
-    // Secrets for surfaces not yet built. Same reasoning as above — the ticket
-    // that introduces each one tightens it to required.
-    JWT_SECRET: optionalString,
+    // Signs staff access tokens. Required as of staff authentication, and
+    // floored at 32 bytes: HS256 accepts a key of any length, so a short
+    // secret is not an error anywhere downstream — it is simply a forgeable
+    // token, which is the failure this refuses to boot on.
+    //
+    // The key-free first run survives it because compose bakes in a throwaway
+    // value, exactly as it does for DATABASE_URL.
+    JWT_SECRET: z.string().trim().min(32),
+
+    // A secret for a surface not yet built. Same reasoning as the optional
+    // integrations — the ticket that introduces it tightens it to required.
     WIDGET_SESSION_SECRET: optionalString,
 
     // Optional integration: Google OIDC staff login.

@@ -58,6 +58,19 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * Whether a value could be a tenant id at all.
+ *
+ * Exported because arming is not the only place a tenant id arrives from
+ * outside: it also travels in the refresh cookie. The two must agree on what
+ * is well-formed, and a second copy of the pattern is how they would stop
+ * agreeing. Note what this is *not* — no claim that the tenant exists, only
+ * that the value is shaped like an id. Existence is row-level security's
+ * answer to give.
+ */
+export const isTenantIdShaped = (value: string): boolean =>
+  UUID_PATTERN.test(value);
+
+/**
  * Validates a context and reduces it to the settings the policies read.
  *
  * Separated from the transaction that issues them so the rules are testable
@@ -75,7 +88,7 @@ export const contextSettings = (context: TenantContext): ContextSettings => {
     throw new InvalidTenantContextError('no tenant was supplied');
   }
 
-  if (!UUID_PATTERN.test(context.tenantId)) {
+  if (!isTenantIdShaped(context.tenantId)) {
     throw new InvalidTenantContextError(
       `tenant id ${JSON.stringify(context.tenantId)} is not a uuid`,
     );

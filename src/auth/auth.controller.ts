@@ -1,0 +1,180 @@
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiCookieAuth,
+  ApiNoContentResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
+import { Request, Response } from 'express';
+import { ApiErrorResponses } from '../common/errors/api-error-responses.decorator';
+import { AppException } from '../common/errors/app-exception';
+import { AppConfigService } from '../config/app-config.service';
+import { ACCESS_TOKEN_TTL_SECONDS } from './access-token.service';
+import { AuthService, Session } from './auth.service';
+import { Public } from './auth.guard';
+import { PrincipalDto, SessionDto } from './dto/session.dto';
+import { SignInDto } from './dto/sign-in.dto';
+import { Principal } from './principal.decorator';
+import {
+  REFRESH_COOKIE,
+  clearRefreshCookie,
+  decodeRefreshCookie,
+  encodeRefreshCookie,
+  setRefreshCookie,
+} from './refresh-cookie';
+import { RequestPrincipal } from './request-principal';
+
+@ApiTags('auth')
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private readonly auth: AuthService,
+    private readonly config: AppConfigService,
+  ) {}
+
+  @Post('sign-in')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sign in with email and password',
+    description:
+      'Returns a 15-minute access token in the body and sets an httpOnly refresh cookie. Every failure answers the same `unauthenticated` error: a wrong password, an unknown address, and an address belonging to a different tenant are deliberately indistinguishable.',
+  })
+  @ApiOkResponse({ type: SessionDto })
+  @ApiErrorResponses('validation_failed', 'unauthenticated')
+  async signIn(
+    @Body() body: SignInDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<SessionDto> {
+    const session = await this.auth.signIn(body);
+
+    return this.respondWith(session, response);
+  }
+
+  /**
+   * The silent half of the session.
+   *
+   * Takes no body at all: the cookie is the entire request. A refresh token in
+   * a body would be one a page script had to be able to read.
+   */
+  @Post('refresh')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth(REFRESH_COOKIE)
+  @ApiOperation({
+    summary: 'Exchange the refresh cookie for a new access token',
+    description:
+      'Rotates the refresh token on every use. Presenting an already-rotated token is treated as theft and revokes the entire token family, so both copies stop working and the legitimate client signs in again.',
+  })
+  @ApiOkResponse({ type: SessionDto })
+  @ApiErrorResponses('unauthenticated')
+  async refresh(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<SessionDto> {
+    const cookie = decodeRefreshCookie(this.cookieValue(request));
+
+    if (!cookie) {
+      clearRefreshCookie(response, this.config.isProduction);
+      throw new AppException('unauthenticated', 'No refresh token presented.');
+    }
+
+    try {
+      const session = await this.auth.refresh(cookie);
+
+      return this.respondWith(session, response);
+    } catch (error) {
+      // A token the server will not accept again should stop being sent.
+      // Left in place, a client retries it forever and every retry after an
+      // eviction reads as fresh theft.
+      clearRefreshCookie(response, this.config.isProduction);
+      throw error;
+    }
+  }
+
+  @Post('sign-out')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiCookieAuth(REFRESH_COOKIE)
+  @ApiOperation({
+    summary: 'End the session',
+    description:
+      'Revokes the whole token family and clears the cookie. Idempotent: signing out without a valid cookie succeeds, because whether a given token exists is not something an unauthenticated caller should be able to learn.',
+  })
+  @ApiNoContentResponse()
+  async signOut(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    const cookie = decodeRefreshCookie(this.cookieValue(request));
+
+    if (cookie) await this.auth.signOut(cookie);
+
+    clearRefreshCookie(response, this.config.isProduction);
+  }
+
+  /**
+   * The authenticated caller, read back through the tenant context their own
+   * token armed.
+   *
+   * Deliberately a database read rather than an echo of the token's claims. An
+   * echo would answer identically whether or not tenant arming worked, which
+   * makes this the cheapest possible end-to-end proof that the `tenantId`
+   * claim reaches row-level security: the User row is only visible from inside
+   * the context the token established.
+   */
+  @Get('me')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The authenticated principal',
+    description:
+      'Resolved from the presented credential alone. Reads the User row inside the tenant context the token arms, so a response here is evidence the whole chain is wired.',
+  })
+  @ApiOkResponse({ type: PrincipalDto })
+  @ApiErrorResponses('unauthenticated', 'not_found')
+  async me(@Principal() principal: RequestPrincipal): Promise<PrincipalDto> {
+    const user = await this.auth.currentUser(principal);
+
+    return {
+      kind: principal.kind,
+      userId: user.id,
+      tenantId: principal.tenantId,
+      role: user.role,
+      email: user.email,
+      name: user.name,
+    };
+  }
+
+  private cookieValue(request: Request): string | undefined {
+    // `cookie-parser` widens `Request['cookies']` to `any`; narrow it back at
+    // the one place the application reads it.
+    const cookies = request.cookies as Record<string, unknown> | undefined;
+    const value = cookies?.[REFRESH_COOKIE];
+
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private respondWith(session: Session, response: Response): SessionDto {
+    setRefreshCookie(
+      response,
+      encodeRefreshCookie(session.principal.tenantId, session.refreshToken),
+      this.config.isProduction,
+    );
+
+    return {
+      accessToken: session.accessToken,
+      expiresInSeconds: ACCESS_TOKEN_TTL_SECONDS,
+    };
+  }
+}

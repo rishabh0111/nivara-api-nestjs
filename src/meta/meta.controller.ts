@@ -1,10 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ERROR_CATALOG, ErrorCode } from 'src/common/errors/error-codes';
+import { Public } from '../auth/auth.guard';
 import { ErrorCodeDto } from './error-code.dto';
 
 @ApiTags('meta')
 @Controller('meta')
+// The error catalog is a published contract, and a client needs it precisely
+// when it is working out how to authenticate. Nothing here is tenant data.
+@Public()
 export class MetaController {
   /**
    * The error catalog, served from the same constant the exception filter
