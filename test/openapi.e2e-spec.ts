@@ -58,4 +58,25 @@ describe('OpenAPI document', () => {
       Object.keys(document.paths).sort(),
     );
   });
+
+  /** Vendor extensions are not in `OperationObject`, so read it as a record. */
+  const operation = (path: string, method: 'get' | 'post') =>
+    document.paths[path][method] as unknown as Record<string, unknown>;
+
+  /**
+   * The scope↔endpoint map downstream repos read, and the reason it is derived
+   * from the guard rather than hand-written: a permission published here that
+   * the server does not actually enforce would be worse than none at all.
+   */
+  it('publishes the permission an operation requires as x-required-permission', () => {
+    const invite = operation('/staff/invitations', 'post');
+
+    expect(invite['x-required-permission']).toBe('user:invite');
+  });
+
+  it('leaves the extension off operations that require no permission', () => {
+    const me = operation('/auth/me', 'get');
+
+    expect(me).not.toHaveProperty('x-required-permission');
+  });
 });

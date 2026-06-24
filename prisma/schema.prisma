@@ -27,6 +27,7 @@ model Tenant {
   users         User[]
   contacts      Contact[]
   refreshTokens RefreshToken[]
+  invitations   StaffInvitation[]
 
   @@map("tenant")
 }
@@ -57,10 +58,59 @@ model User {
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   refreshTokens RefreshToken[]
+  /// The invitation that provisioned this User, if one did.
+  invitation    StaffInvitation? @relation("InvitedUser")
+  /// Invitations this User issued. Admin-only in practice, but the schema does
+  /// not encode that — authority is the guard's business, not the FK's.
+  invitationsSent StaffInvitation[] @relation("InvitingUser")
 
   // The login lookup key. Uniqueness is per tenant, never global.
   @@unique([tenantId, email])
   @@map("user")
+}
+
+/// One outstanding offer of tenant membership.
+///
+/// Membership is deliberate: there is no self-service registration anywhere in
+/// this API, so every User arrives through a row here. The invitation carries
+/// the single-use secret and nothing about authority — `role` is already on the
+/// User row the invite provisioned, decided by the admin at issue time rather
+/// than chosen by the person accepting.
+///
+/// Stored as `sha256(token)` for the same reason a refresh token is: a database
+/// read must not yield a usable credential, and here the credential would grant
+/// a foothold inside a tenant.
+model StaffInvitation {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The pending User this invitation provisions. One invitation per User —
+  /// re-inviting means revoking and issuing again, so there are never two live
+  /// secrets for one seat.
+  userId String @unique @map("user_id") @db.Uuid
+
+  /// `sha256(token)`, hex. The raw token exists only in the mint response.
+  tokenHash String @map("token_hash")
+
+  /// The admin who issued it. Server-stamped from their credential, so the
+  /// audit answer to "who let this person in" cannot be forged.
+  invitedById String @map("invited_by_id") @db.Uuid
+
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  /// Set once, when the invitee sets a password. A row with a value here is
+  /// spent; presenting its token again is refused rather than re-accepted.
+  acceptedAt DateTime? @map("accepted_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User   @relation("InvitedUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User   @relation("InvitingUser", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  // Presented invitations are looked up by hash alone, inside an armed context.
+  @@unique([tenantId, tokenHash])
+  @@map("staff_invitation")
 }
 
 /// One issued refresh token, stored as a hash and never as itself.

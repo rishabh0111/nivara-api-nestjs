@@ -53,6 +53,8 @@ Background: [docs/research/rls-neon-pooling.md](docs/research/rls-neon-pooling.m
 | `POST /auth/refresh` | Exchanges the refresh cookie for a new access token, rotating it. |
 | `POST /auth/sign-out` | Revokes the token family and clears the cookie. |
 | `GET /auth/me` | The authenticated principal, read through the tenant its own token armed. |
+| `POST /staff/invitations` | Admin-only. Provisions a pending User and returns a single-use invitation token, shown once. |
+| `POST /staff/invitations/accept` | Sets the invited User's password, spending the invitation. Public — the invitee has no credential yet. |
 | `GET /health` | Liveness. Dependency-free — touches neither Postgres nor Redis, so a keep-warm ping never fails on a dependency blip. A readiness endpoint arrives alongside the dependencies it would check. |
 | `GET /meta/error-codes` | The closed catalog of machine-readable error codes. |
 | `GET /docs` | Browsable OpenAPI documentation. |
@@ -71,11 +73,21 @@ A session is two halves, and they are deliberately different kinds of thing:
 | Held | In memory, sent as `Authorization: Bearer` | httpOnly cookie, scoped to `/auth` |
 | Stored | Nowhere — it is self-contained | `sha256` only; the raw value is unrecoverable |
 
-The `tenantId` claim is the sole authority for which tenant a request acts in, and what arms `withTenant()`. It is never read from a body, a path, or a header — the one exception is sign-in itself, where there is no credential yet to read it from, and naming a tenant there grants nothing without a password.
+The `tenantId` claim is the sole authority for which tenant a request acts in, and what arms `withTenant()`. It is never read from a body, a path, or a header, with one exception of a single shape: the two endpoints that exist to *establish* a credential — sign-in and invitation acceptance — take a `tenantId` in the body, because there is no credential yet to read it from. In both it is a routing input rather than an authority claim: it decides which tenant's rows the lookup can see, and being seen still requires the password or the invitation secret.
 
 Refresh tokens **rotate on every use** and belong to a family. Presenting an already-rotated token means two parties hold the same secret with nothing to tell them apart, so the whole family is revoked: theft costs both parties the session rather than granting the thief a parallel one. The legitimate client signs in again — and so does nobody else.
 
 Authentication resolves any credential into a uniform `RequestPrincipal`. Service tokens will add a second branch at that one seam and converge on the same shape, so there is never a second authorization path to drift out of sync with the first.
+
+## Authorization
+
+Authority is a vocabulary of named permissions with a static role-to-permission map ([src/authz/permissions.ts](src/authz/permissions.ts)) — what an `agent` may do is one table rather than a `role === 'admin'` scattered through controllers. An agent does the support work; an admin adds tenant configuration and destructive operations. The same vocabulary is the scope namespace for service tokens, so there is one set of permission names rather than two to keep in sync.
+
+A permission guard runs after authentication and **fails closed**: an operation that declares no `@RequiresPermission()` is refused rather than published, and an operation that genuinely needs none says so with `@AuthenticatedOnly()`. Each requirement surfaces in the OpenAPI document as `x-required-permission`, derived from the same decorator the guard reads — so the published map cannot describe an authority the server does not enforce.
+
+Row-level security sits beneath both guards. A guard bug refuses work that should have been allowed, or allows a call that should have been refused; it cannot show one tenant another tenant's rows.
+
+Membership is deliberate: there is no self-service registration. An admin invites an address, which creates a User with no credential, and the invitee sets their password by spending a single-use invitation token.
 
 Every route is authenticated unless it carries `@Public()`. Forgetting the decorator returns 401 and gets reported; the inverse default would publish a tenant's data with nothing to notice.
 

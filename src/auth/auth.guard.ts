@@ -10,7 +10,12 @@ import { AppException } from '../common/errors/app-exception';
 import { AccessTokenService } from './access-token.service';
 import { RequestPrincipal } from './request-principal';
 
-const PUBLIC_KEY = 'auth:public';
+/**
+ * Exported because the authorization guard reads it too: a public route has no
+ * principal, so there is nothing there to authorize either. One key rather than
+ * two means a route cannot be public to one guard and closed to the other.
+ */
+export const PUBLIC_KEY = 'auth:public';
 
 /**
  * Opens a route to unauthenticated callers.

@@ -15,6 +15,7 @@ The support API for Nivara Desk — a multitenant, two-sided customer-support he
 - **Success** — single resources are returned bare; collections wrap as \`{ data, nextCursor }\`. HTTP status discriminates success from error, so success bodies need no envelope.
 - **Pagination** — cursor/keyset, never offset. \`limit\` defaults to 25 and caps at 100. There is no \`total\`. Default order is newest-first. The cursor is opaque — pass it back unmodified.
 - **Errors** — always \`{ error: { code, message, details? } }\`. Branch on \`code\`, drawn from the closed catalog at \`GET /meta/error-codes\`. \`details\` appears only on 422.
+- **Authority** — an operation that needs a named permission carries it as \`x-required-permission\`, derived from the guard that enforces it rather than written by hand. The same vocabulary is the scope namespace for service tokens: there is one set of permission names, not two.
 - **Unknown query parameters are rejected with 400**, never silently ignored.
 - **404, never 403, for records you cannot see** — a record belonging to another tenant is indistinguishable from one that does not exist.
 `.trim();
@@ -36,6 +37,7 @@ export const buildOpenApiDocument = (app: INestApplication): OpenAPIObject =>
       .addTag('health', 'Liveness')
       .addTag('meta', 'Published contracts — error codes and scopes')
       .addTag('auth', 'Sign-in, session refresh, and the current principal')
+      .addTag('staff', 'Provisioning colleagues into a tenant by invitation')
       // The default scheme. Every operation without an explicit `@Public()` is
       // authenticated, so declaring it globally matches what the guard does
       // rather than restating it per operation.

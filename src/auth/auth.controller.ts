@@ -17,6 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Request, Response } from 'express';
+import { AuthenticatedOnly } from '../authz/require-permission.decorator';
 import { ApiErrorResponses } from '../common/errors/api-error-responses.decorator';
 import { AppException } from '../common/errors/app-exception';
 import { AppConfigService } from '../config/app-config.service';
@@ -135,6 +136,10 @@ export class AuthController {
    * the context the token established.
    */
   @Get('me')
+  // Describing yourself to yourself is not an authority anyone holds over
+  // anyone, so this operation genuinely requires no permission — said out loud,
+  // because the authorization guard refuses anything that stays silent.
+  @AuthenticatedOnly()
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'The authenticated principal',

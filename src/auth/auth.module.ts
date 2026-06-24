@@ -8,6 +8,7 @@ import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
+import { PermissionGuard } from '../authz/permission.guard';
 
 /**
  * Authentication, and the guard that closes the application by default.
@@ -30,9 +31,18 @@ import { RefreshTokenService } from './refresh-token.service';
     AccessTokenService,
     RefreshTokenService,
     PasswordService,
+    // Order matters and is load-bearing: Nest runs globally-scoped guards in
+    // the order they are provided, and `PermissionGuard` weighs a principal
+    // `AuthGuard` has to have resolved first. Declared adjacently, in one
+    // module, so the ordering is a two-line invariant rather than a property of
+    // how modules happen to be imported.
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: PermissionGuard },
   ],
-  exports: [AccessTokenService],
+  // `PasswordService` travels with the module that defines what a stored
+  // credential looks like: accepting an invitation writes a hash this module's
+  // sign-in has to verify, so both sides must use one configuration.
+  exports: [AccessTokenService, PasswordService],
 })
 export class AuthModule implements NestModule {
   /**
