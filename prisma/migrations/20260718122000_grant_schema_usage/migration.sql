@@ -1,0 +1,26 @@
+-- ---------------------------------------------------------------------------
+-- Schema usage for the runtime role, re-established on every reset
+-- ---------------------------------------------------------------------------
+--
+-- `app_user` needs `USAGE` on `public` before any table grant means anything.
+-- That grant was made only by the compose init script, which Postgres runs
+-- exactly once, on an empty data directory.
+--
+-- `prisma migrate reset` drops and recreates the `public` schema. The recreated
+-- schema is a new object with default privileges, so the init script's grant is
+-- gone and does not come back — the init script will not run again while the
+-- data directory exists. The result is a database that migrates and seeds
+-- perfectly and then fails every runtime query with `permission denied for
+-- schema public`, which reads like a broken application rather than a missing
+-- grant.
+--
+-- Repeating the grant here puts it in the sequence that reset replays, so the
+-- database that comes out of a reset is one the application can actually use.
+-- The role itself still belongs to the init script: creating a login role means
+-- choosing a password, which is deployment's business rather than the schema's.
+--
+-- Idempotent, and unconditional for the reason the first migration's grants are:
+-- if the role is missing, this fails loudly here rather than silently leaving
+-- the runtime unable to read its own tables.
+
+GRANT USAGE ON SCHEMA public TO app_user;

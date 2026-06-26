@@ -6,6 +6,7 @@ import { HealthModule } from './health/health.module';
 import { MetaModule } from './meta/meta.module';
 import { StaffModule } from './staff/staff.module';
 import { TenancyModule } from './tenancy/tenancy.module';
+import { TicketsModule } from './tickets/tickets.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { TenancyModule } from './tenancy/tenancy.module';
     TenancyModule,
     AuthModule,
     StaffModule,
+    TicketsModule,
     HealthModule,
     MetaModule,
   ],

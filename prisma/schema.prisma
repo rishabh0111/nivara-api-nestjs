@@ -28,6 +28,7 @@ model Tenant {
   contacts      Contact[]
   refreshTokens RefreshToken[]
   invitations   StaffInvitation[]
+  tickets       Ticket[]
 
   @@map("tenant")
 }
@@ -58,6 +59,9 @@ model User {
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   refreshTokens RefreshToken[]
+  /// Tickets this User is currently responsible for. There is no inverse for
+  /// "tickets they closed" — that is an audit question, not a relation.
+  assignedTickets Ticket[]     @relation("TicketAssignee")
   /// The invitation that provisioned this User, if one did.
   invitation    StaffInvitation? @relation("InvitedUser")
   /// Invitations this User issued. Admin-only in practice, but the schema does
@@ -66,6 +70,10 @@ model User {
 
   // The login lookup key. Uniqueness is per tenant, never global.
   @@unique([tenantId, email])
+  // Redundant on its own — `id` is already unique — but it is the target a
+  // composite foreign key needs. See `Ticket.assignee` for why anything
+  // referencing a User references `(tenantId, id)` rather than `id` alone.
+  @@unique([tenantId, id])
   @@map("user")
 }
 
@@ -169,10 +177,115 @@ model Contact {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tickets Ticket[]
 
   // An anonymous Contact has no email, and Postgres treats NULLs as distinct,
   // so this constrains identified Contacts without collapsing anonymous ones.
   @@unique([tenantId, email])
+  // The composite foreign-key target. See `Ticket.contact`.
+  @@unique([tenantId, id])
   @@map("contact")
+}
+
+/// Where a Ticket came from. Fixed at creation and never edited: it is a fact
+/// about how the conversation started, not a property of the work.
+enum TicketSource {
+  portal
+  widget
+  slack
+
+  @@map("ticket_source")
+}
+
+/// A Ticket's progress. Five values, and `reopened` is deliberately not among
+/// them — reopening is the transition `resolved → open`, so nothing downstream
+/// has to special-case a near-duplicate of `open`.
+///
+/// Transitions are unenforced at this point in the build: the column accepts
+/// any value in the enum, and ticket 07 adds both the app-level guard and the
+/// database trigger that make the illegal ones impossible.
+enum TicketState {
+  open
+  pending
+  on_hold
+  resolved
+  closed
+
+  @@map("ticket_state")
+}
+
+/// A Ticket's urgency, and the sole key into SLA targets.
+///
+/// Orthogonal to state by design — any priority is valid in any state, and
+/// changing one is never a transition. Urgency and progress are separate facts
+/// about a Ticket and answering "how bad is this" must not require moving it.
+enum TicketPriority {
+  low
+  normal
+  high
+  urgent
+
+  @@map("ticket_priority")
+}
+
+/// The unit of support work.
+///
+/// Born `open` and `normal`, always: new work is unambiguous and triage is an
+/// explicit act rather than a state the creator chose. Both defaults live in
+/// the database rather than in application code, so the guarantee holds for
+/// the seed and for any future writer, not only for this API's create path.
+model Ticket {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  subject String
+
+  /// The requester, and required. Every Ticket is from someone: a Ticket with
+  /// no Contact would have no one to reply to.
+  contactId String @map("contact_id") @db.Uuid
+
+  /// The single User responsible, or nobody. Optional because unassigned is
+  /// the honest state of untriaged work — there is no `new` state standing in
+  /// for it.
+  assigneeId String? @map("assignee_id") @db.Uuid
+
+  state    TicketState    @default(open)
+  priority TicketPriority @default(normal)
+  source   TicketSource
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Composite `(tenant_id, id)` rather than `id`, because foreign-key checks
+  /// run with row-level security bypassed and a plain reference would accept
+  /// another tenant's Contact. ADR-0002 has the argument; every tenant-scoped
+  /// reference in this schema follows it.
+  contact Contact @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade)
+
+  /// Composite for the same reason — an assignee must be staff of this tenant,
+  /// and the constraint is what says so.
+  ///
+  /// `Restrict` rather than `SetNull` is forced by that choice: a composite
+  /// `SET NULL` would have to null `tenant_id` too, which is `NOT NULL`. The
+  /// resulting rule is an honest one — a User holding Tickets cannot be deleted
+  /// out from under them, and their queue is reassigned first. Nothing in this
+  /// API deletes a User anyway; staff are deactivated, which leaves both the
+  /// assignment and the history intact.
+  assignee User? @relation("TicketAssignee", fields: [tenantId, assigneeId], references: [tenantId, id], onDelete: Restrict)
+
+  // The queue reads. Every one of these is `tenantId`-leading because every
+  // query runs inside a tenant context — an index that omitted it would be
+  // unusable for the only access pattern this table has.
+  @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)])
+  // The second sortable field. Both keyset orderings need `(field, id)` to be
+  // servable, so a field becoming sortable and a field getting an index are
+  // the same decision — see `TICKET_SORTABLE`.
+  @@index([tenantId, updatedAt(sort: Desc), id(sort: Desc)])
+  @@index([tenantId, state, createdAt(sort: Desc)])
+  @@index([tenantId, assigneeId, createdAt(sort: Desc)])
+  @@index([tenantId, contactId])
+  @@map("ticket")
 }

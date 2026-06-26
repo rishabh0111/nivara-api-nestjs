@@ -1,0 +1,9 @@
+# Composite foreign keys on every tenant-scoped reference
+
+Row-level security does not apply to foreign-key checks: Postgres validates them with an internal system trigger that runs as the table owner with policies bypassed. A plain `ticket.contact_id -> contact(id)` reference is therefore satisfied by *any* tenant's Contact, and a request quoting another tenant's id is accepted — the referenced row stays invisible to every later read, but the write succeeded and the cross-tenant link is real. This was not theoretical: the first version of the `ticket` table shipped with plain references and an integration test caught a Meridian agent successfully attaching a Sortwood Contact as requester.
+
+So **every foreign key between two tenant-scoped tables references `(tenant_id, id)` rather than `id`**, with the referencing side supplying its own `tenant_id` as the first column. A row in another tenant then cannot satisfy the constraint at all, and same-tenant linkage becomes a property of the schema rather than a check each write path has to remember. This costs a `@@unique([tenantId, id])` on every referenced table — redundant as a uniqueness claim, since `id` is already unique, and present only to be a valid reference target.
+
+Two consequences worth stating. `ON DELETE SET NULL` is unavailable on these references, because nulling the pair would have to null the `NOT NULL` `tenant_id` too — an optional reference like `ticket.assignee_id` uses `RESTRICT` instead, so a User holding Tickets cannot be deleted without reassigning them first. And a service may rely on the constraint instead of a read-then-write existence check: the constraint has no race, and its violation maps to the same 404 a nonexistent row gets, so the endpoint does not become a probe for another tenant's data.
+
+RLS remains the read barrier and this is the write barrier. Neither substitutes for the other, and a new tenant-scoped table needs both.
