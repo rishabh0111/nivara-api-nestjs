@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { AppException } from '../common/errors/app-exception';
 import {
@@ -9,6 +10,7 @@ import {
 import { buildPage, Page } from '../common/pagination/page';
 import { parseSort } from '../common/pagination/sort';
 import {
+  AuditAction,
   Ticket,
   TicketPriority,
   TicketSource,
@@ -51,7 +53,10 @@ export interface ListTicketsInput extends TicketFilters {
  */
 @Injectable()
 export class TicketService {
-  constructor(private readonly tenancy: TenancyService) {}
+  constructor(
+    private readonly tenancy: TenancyService,
+    private readonly audit: AuditService,
+  ) {}
 
   /**
    * Opens a Ticket on a Contact's behalf.
@@ -71,13 +76,18 @@ export class TicketService {
    * Translating the violation into a 404 keeps the answer identical to the one
    * a nonexistent Contact gets, so this endpoint cannot be used to probe for
    * the existence of another tenant's Contacts.
+   *
+   * The audit row is written inside the same transaction as the Ticket, so the
+   * two commit together or not at all. A Ticket that exists with no record of
+   * its creation, and a record of a creation that rolled back, are both states
+   * this makes unreachable rather than unlikely.
    */
   async create(
     principal: RequestPrincipal,
     input: CreateTicketInput,
   ): Promise<Ticket> {
-    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
-      tx.ticket
+    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
+      const ticket = await tx.ticket
         .create({
           data: {
             tenantId: principal.tenantId,
@@ -91,8 +101,28 @@ export class TicketService {
             throw AppException.notFound('Contact');
 
           throw error;
-        }),
-    );
+        });
+
+      // `toValue` is the state the Ticket was born in, not its subject: this is
+      // the control-plane record, and what it captures about a creation is where
+      // the Ticket entered the state machine. The subject is domain data and
+      // lives on the Ticket itself.
+      //
+      // No `metadata`. Source and priority are columns on the Ticket, readable
+      // there at any time — copying them here would make the entry a partial,
+      // silently-stale duplicate of a row it already points at. `metadata` is
+      // for facts with nowhere else to live, like the scopes a minted token
+      // carried.
+      await this.audit.record(tx, {
+        action: AuditAction.ticket_created,
+        targetKind: 'ticket',
+        targetId: ticket.id,
+        ticketId: ticket.id,
+        toValue: ticket.state,
+      });
+
+      return ticket;
+    });
   }
 
   /** One Ticket, or the 404 that another tenant's Ticket is indistinguishable from. */

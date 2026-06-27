@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { GLOBAL_PROVIDERS } from './common/global-providers';
 import { AppConfigModule } from './config/app-config.module';
@@ -15,6 +16,7 @@ import { TicketsModule } from './tickets/tickets.module';
     AuthModule,
     StaffModule,
     TicketsModule,
+    AuditModule,
     HealthModule,
     MetaModule,
   ],

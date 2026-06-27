@@ -29,6 +29,7 @@ model Tenant {
   refreshTokens RefreshToken[]
   invitations   StaffInvitation[]
   tickets       Ticket[]
+  auditLog      AuditLog[]
 
   @@map("tenant")
 }
@@ -276,6 +277,10 @@ model Ticket {
   /// assignment and the history intact.
   assignee User? @relation("TicketAssignee", fields: [tenantId, assigneeId], references: [tenantId, id], onDelete: Restrict)
 
+  /// The control-plane record for this Ticket. Not a cascade: entries outlive
+  /// the Ticket they describe — see `AuditLog.ticket`.
+  auditLog AuditLog[]
+
   // The queue reads. Every one of these is `tenantId`-leading because every
   // query runs inside a tenant context — an index that omitted it would be
   // unusable for the only access pattern this table has.
@@ -287,5 +292,128 @@ model Ticket {
   @@index([tenantId, state, createdAt(sort: Desc)])
   @@index([tenantId, assigneeId, createdAt(sort: Desc)])
   @@index([tenantId, contactId])
+  // The composite foreign-key target, as on `Contact` and `User`. Redundant as
+  // a uniqueness claim — `id` is already unique — and present only so anything
+  // referencing a Ticket can reference `(tenant_id, id)`. See `AuditLog.ticket`.
+  @@unique([tenantId, id])
   @@map("ticket")
+}
+
+/// The kinds of thing that can act, mirroring `ACTOR_KINDS` in
+/// `src/tenancy/tenant-context.ts`.
+enum ActorKind {
+  user
+  contact
+  service
+  system
+
+  @@map("actor_kind")
+}
+
+/// The closed catalog of audited events.
+///
+/// Closed rather than an open envelope: a newly audited event is an honest
+/// schema fact and should cost a migration. `ticket.transitioned` is one action
+/// rather than one per state pair, and `sla.breached` is one action with
+/// `metadata.kind` separating first-response from resolution — analytics reads
+/// the SLA latch columns rather than this table, so splitting it would buy
+/// nothing.
+///
+/// Reserved, and deliberately absent until it has a write path: `contact.merged`,
+/// which lands with the Contact identity-merge seam.
+enum AuditAction {
+  ticket_created          @map("ticket.created")
+  ticket_transitioned     @map("ticket.transitioned")
+  ticket_assigned         @map("ticket.assigned")
+  ticket_priority_changed @map("ticket.priority_changed")
+  sla_breached            @map("sla.breached")
+  token_minted            @map("token.minted")
+  token_revoked           @map("token.revoked")
+  integration_failed      @map("integration.failed")
+
+  @@map("audit_action")
+}
+
+/// An append-only record of who changed the state or configuration of the
+/// system, and what it was before.
+///
+/// Control-plane only. Message and Note *content* is never recorded here:
+/// conversation is domain data, attributed on its own rows, and duplicating it
+/// would drown the signal this table carries. The state changes a message
+/// *causes* — an auto-reopen, say — are audited; the message is not.
+///
+/// Three of the guarantees below are not expressible in this file and live in
+/// the migration instead, because they must hold for the Spring and FastAPI
+/// ports as well as for this one: UPDATE and DELETE are revoked and additionally
+/// refused by a trigger, so history cannot be rewritten; the actor is stamped
+/// from the armed context by a trigger rather than supplied; and an insert
+/// reaching the table with no actor in context raises rather than defaulting to
+/// `system`.
+model AuditLog {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Defaulted from `app.current_tenant` for the same reason the actor is
+  /// stamped: on this table, provenance comes from the armed context rather
+  /// than from the caller. The tenant policy's `WITH CHECK` is the backstop —
+  /// a row naming another tenant is refused outright.
+  tenantId String @default(dbgenerated("NULLIF(current_setting('app.current_tenant', true), '')::uuid")) @map("tenant_id") @db.Uuid
+
+  action AuditAction
+
+  /// Never supplied at the insert site. The default makes the column optional
+  /// to Prisma; the trigger is what makes it un-forgeable.
+  actorKind ActorKind @default(dbgenerated("current_actor_kind()")) @map("actor_kind")
+
+  /// Null exactly when `actorKind` is `system`, which is the one actor with no
+  /// row to point at. A check constraint enforces the equivalence.
+  actorId String? @default(dbgenerated("current_actor_id()")) @map("actor_id") @db.Uuid
+
+  /// Polymorphic target. Text rather than an enum: the *action* catalog is the
+  /// closed vocabulary this table commits to, and closing the target set too
+  /// would mean a migration whenever an existing action learned to point at a
+  /// new kind of row.
+  targetKind String @map("target_kind")
+  targetId   String @map("target_id") @db.Uuid
+
+  /// The per-ticket timeline's key. A real column rather than a read of
+  /// `targetId`, because most rows target something that merely *belongs* to a
+  /// Ticket rather than the Ticket itself.
+  ticketId String? @map("ticket_id") @db.Uuid
+
+  /// Old and new, as plain text. Transitions, priority changes and assignments
+  /// are all old→new pairs; typing these as any one domain enum would couple
+  /// the table to every enum in the schema. `action` says how to read them.
+  fromValue String? @map("from_value")
+  toValue   String? @map("to_value")
+
+  /// The irregular tail — minted scopes, dead-letter target and error, the
+  /// `sla.breached` kind. Anything that is real structure is a column above.
+  metadata Json? @db.JsonB
+
+  /// Ties one request's cascade of rows together. Unset for now: there is no
+  /// request id in the pipeline yet, and inventing one per row would tie
+  /// nothing to anything.
+  correlationId String? @map("correlation_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  /// `Restrict`, where every other tenant-scoped table cascades. A cascade is a
+  /// DELETE, and DELETE on this table is refused — so the two would be opposite
+  /// instructions, and Postgres would surface the conflict as an append-only
+  /// error raised from inside a `DELETE FROM tenant`. `Restrict` states the real
+  /// rule instead: a Tenant with history cannot be hard-deleted. See the
+  /// migration for why that constraint is honest rather than incidental.
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  /// Composite per ADR-0002, and `NoAction` here only because Prisma's schema
+  /// language cannot express what the migration actually declares:
+  /// `ON DELETE SET NULL (ticket_id)`. Postgres 15's column list narrows the
+  /// clause to the one column, which is what lets this reference be composite
+  /// *and* survive the deletion of its subject — ADR-0002 records the bare form
+  /// as impossible, and the amendment is noted there. Prisma does not manage
+  /// this constraint; the migration does.
+  ticket Ticket? @relation(fields: [tenantId, ticketId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([tenantId, ticketId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("audit_log")
 }
