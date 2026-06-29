@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
+import { permissionsFor } from '../authz/permissions';
 import { AppException } from '../common/errors/app-exception';
 import {
   keysetPlan,
@@ -14,8 +15,10 @@ import {
   Ticket,
   TicketPriority,
   TicketSource,
+  TicketState,
 } from '../generated/prisma/client';
-import { TenancyService } from '../tenancy/tenancy.service';
+import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
+import { canTransition } from './state-machine';
 import { TicketFilters, ticketWhere } from './ticket-filters';
 
 /**
@@ -172,18 +175,82 @@ export class TicketService {
   }
 
   /**
+   * Moves a Ticket to another state.
+   *
+   * The two halves of the machine meet here, and the order is deliberate. The
+   * authority question is asked first and locally, because it is the only half
+   * this process knows the answer to — a credential is not something the
+   * database can see. Legality is not asked at all: the `BEFORE UPDATE` trigger
+   * owns the transition table, so this method attempts the move and translates
+   * the refusal. Checking first would mean a second copy of the table that can
+   * disagree with the one that decides, and would still not make the write
+   * safe.
+   *
+   * The current state is read inside the transaction because `canTransition`
+   * needs an origin, and the update is then a compare-and-set against exactly
+   * the state that was read. Without that predicate, a concurrent transition
+   * committing between the two statements would be authorized against a state
+   * the Ticket has already left; with it, the loser gets a conflict instead.
+   *
+   * A move to the state a Ticket is already in is accepted and changes nothing.
+   * The trigger does not see it — there is no transition to check or to record
+   * — and answering "it is already open" with an error would make a retried
+   * request fail where the first one succeeded.
+   */
+  async transition(
+    principal: RequestPrincipal,
+    id: string,
+    to: TicketState,
+  ): Promise<Ticket> {
+    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
+      const current = await tx.ticket.findUnique({ where: { id } });
+
+      if (!current) throw AppException.notFound('Ticket');
+
+      // The same refusal the guard gives, from `AppException.forbidden`: a
+      // caller who learned that *this* transition specifically needs
+      // `ticket:close` would have learned the shape of the tenant's authority
+      // model from an endpoint the route-level grant already let them reach.
+      if (!canTransition(current.state, to, permissionsFor(principal))) {
+        throw AppException.forbidden();
+      }
+
+      const { count } = await tx.ticket
+        .updateMany({
+          where: { id, state: current.state },
+          data: { state: to },
+        })
+        .catch(rethrowStateMachineRefusal);
+
+      if (count === 0) {
+        throw new AppException(
+          'conflict',
+          'The Ticket changed state while this request was in flight. Read it again and retry.',
+        );
+      }
+
+      // No audit call. `ticket.transitioned` is written by the trigger that
+      // permitted the move, in the same statement — recording it here as well
+      // would double every entry, and recording it *only* here would leave the
+      // guarantee resting on this call site rather than on the schema.
+
+      return readBack(tx, id);
+    });
+  }
+
+  /**
    * Sets priority, which is not a state transition.
    *
    * Urgency and progress are orthogonal facts about a Ticket: any priority is
    * valid in any state, so this touches nothing the state machine owns and
    * needs none of its guard.
    *
-   * With one exception, which is deliberately not implemented here: a `closed`
-   * Ticket is locked, and priority is meant to be immutable on it. That is the
-   * one place the two axes touch, so it belongs with the state machine in
-   * ticket 07 rather than as a lone state check in a service that otherwise
-   * knows nothing about states. Unreachable until then — nothing can move a
-   * Ticket to `closed` yet.
+   * With one exception, and it is enforced where it belongs rather than here: a
+   * `closed` Ticket is a finished record, so the trigger refuses a priority
+   * edit on one — as it refuses an assignment, for the same reason. That check
+   * lives with the state machine because it is the one place the two axes
+   * touch, and because a lone state test in this method would hold for this
+   * port and no other.
    */
   async setPriority(
     principal: RequestPrincipal,
@@ -199,6 +266,10 @@ export class TicketService {
    * At most one User, and nothing above it: no teams, no groups, no queues
    * owning a ticket. "Who is responsible for this" has exactly one answer or
    * none, and the schema says so rather than a convention around a join table.
+   *
+   * Refused on a `closed` Ticket, by the same trigger and for the same reason
+   * priority is: handing finished work to someone is a claim about a queue
+   * nobody is working.
    */
   async setAssignee(
     principal: RequestPrincipal,
@@ -231,21 +302,38 @@ export class TicketService {
     data: { priority?: TicketPriority; assigneeId?: string | null },
   ): Promise<Ticket> {
     return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
-      const { count } = await tx.ticket.updateMany({ where: { id }, data });
+      const { count } = await tx.ticket
+        .updateMany({ where: { id }, data })
+        .catch(rethrowStateMachineRefusal);
 
       if (count === 0) throw AppException.notFound('Ticket');
 
-      // Read back inside the same transaction, so the returned representation
-      // is the row as written rather than one a concurrent edit may have moved
-      // on from.
-      const ticket = await tx.ticket.findUnique({ where: { id } });
-
-      if (!ticket) throw AppException.notFound('Ticket');
-
-      return ticket;
+      return readBack(tx, id);
     });
   }
 }
+
+/**
+ * The row as written, inside the transaction that wrote it.
+ *
+ * Read back rather than reconstructed from the input, so the returned
+ * representation carries whatever the database decided — `updatedAt`, and any
+ * column a trigger touched — rather than what this process assumed. Inside the
+ * transaction, so it cannot be a row a concurrent edit has already moved on
+ * from.
+ *
+ * The 404 is unreachable in practice: the update that preceded it matched. It
+ * is here because the alternative is a non-null assertion, and a wrong
+ * assumption should surface as the same refusal every other invisible row gets
+ * rather than as a 500.
+ */
+const readBack = async (tx: TenantClient, id: string): Promise<Ticket> => {
+  const ticket = await tx.ticket.findUnique({ where: { id } });
+
+  if (!ticket) throw AppException.notFound('Ticket');
+
+  return ticket;
+};
 
 /**
  * Whether a write named a row that, from inside this tenant context, does not
@@ -260,3 +348,64 @@ const isForeignKeyViolation = (error: unknown): boolean =>
   typeof error === 'object' &&
   error !== null &&
   (error as { code?: unknown }).code === 'P2003';
+
+/**
+ * The state machine's refusals, and what a client is told about each.
+ *
+ * Keyed by the custom SQLSTATE the trigger raises rather than by its message.
+ * The trigger's wording is a diagnostic aimed at whoever is reading a log —
+ * it names the Ticket, the states, and a SQL function to go look at — so
+ * branching on it would make this API's error codes a function of that prose
+ * and would break the day someone improves it. A SQLSTATE is the contract
+ * between the schema and every port of it; the prose is not.
+ *
+ * Every entry is `conflict` rather than `validation_failed`, which is why the
+ * code is not part of the table: the request is well-formed and would have
+ * been fine against a Ticket in another state. What is wrong is the state of
+ * the resource, which is what 409 means — and the remedy is to re-read the
+ * Ticket, not to fix a field.
+ */
+const STATE_MACHINE_REFUSALS = {
+  TK001:
+    'That is not a legal transition for this Ticket in its current state. Read it again to see where it is.',
+  TK002:
+    'A closed Ticket is a finished record: neither its priority nor its assignee can be changed.',
+} as const;
+
+type StateMachineSqlstate = keyof typeof STATE_MACHINE_REFUSALS;
+
+/** Turns a trigger refusal into a 409, and rethrows anything else untouched. */
+function rethrowStateMachineRefusal(error: unknown): never {
+  const sqlstate = stateMachineSqlstate(error);
+
+  if (sqlstate)
+    throw new AppException('conflict', STATE_MACHINE_REFUSALS[sqlstate]);
+
+  throw error;
+}
+
+/**
+ * The SQLSTATE behind a driver error, when it is one of ours.
+ *
+ * A trigger's `RAISE` is not a failure mode Prisma has a `P`-code for, so it
+ * arrives as a driver adapter error carrying the raw Postgres fields on
+ * `cause`. Read structurally rather than through `instanceof`, for the reason
+ * the foreign-key check above gives: the generated client's error classes are
+ * not guaranteed to be the ones a future client version constructs, and getting
+ * this wrong turns a 409 into a 500.
+ */
+const stateMachineSqlstate = (
+  error: unknown,
+): StateMachineSqlstate | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  const cause = (error as { cause?: unknown }).cause;
+
+  if (typeof cause !== 'object' || cause === null) return undefined;
+
+  const code = (cause as { code?: unknown }).code;
+
+  return typeof code === 'string' && code in STATE_MACHINE_REFUSALS
+    ? (code as StateMachineSqlstate)
+    : undefined;
+};

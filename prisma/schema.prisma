@@ -203,9 +203,13 @@ enum TicketSource {
 /// them — reopening is the transition `resolved → open`, so nothing downstream
 /// has to special-case a near-duplicate of `open`.
 ///
-/// Transitions are unenforced at this point in the build: the column accepts
-/// any value in the enum, and ticket 07 adds both the app-level guard and the
-/// database trigger that make the illegal ones impossible.
+/// Which pairs are legal is not expressible in this file, and the table is
+/// deliberately written down in only one place: `ticket_transition_is_legal()`
+/// in the state-machine migration, enforced by triggers on `ticket` that also
+/// fix the birth state and emit the audit rows. Restating it here would be a
+/// second copy that can drift from the one that decides. The single dimension
+/// the database cannot judge — who may close, since that needs a credential —
+/// is `src/tickets/state-machine.ts`.
 enum TicketState {
   open
   pending

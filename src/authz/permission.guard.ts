@@ -97,15 +97,7 @@ export class PermissionGuard implements CanActivate {
 }
 
 /**
- * One refusal for both cases, deliberately.
- *
- * A caller learning *which* permission they lack learns the shape of the
- * tenant's authority model, and a caller able to tell "you may not" from "this
- * endpoint is misconfigured" learns where to keep probing. Neither is
- * actionable to a legitimate client: both mean ask an admin.
+ * One refusal for both cases, and the same one every other authorization
+ * failure in the API answers with. See `AppException.forbidden`.
  */
-const forbidden = (): AppException =>
-  new AppException(
-    'forbidden',
-    'This operation requires a permission your role does not hold.',
-  );
+const forbidden = (): AppException => AppException.forbidden();

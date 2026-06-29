@@ -33,6 +33,14 @@ export const PERMISSION_CATALOG = {
   'user:read': 'List the tenant’s staff — the assignee picker needs this.',
 
   // --- Tenant configuration and destructive operations ---------------------
+  // Separate from `ticket:transition` because it is a different kind of act:
+  // every other transition is reversible, and `closed` is terminal — no
+  // transition leads out of it, and a later reply opens a new Ticket rather
+  // than reviving this one. It is the only transition whose authority depends
+  // on the destination, which is why the check is in `TicketService` rather
+  // than on the route: one endpoint serves every transition, and a route-level
+  // grant could not tell them apart.
+  'ticket:close': 'End a Ticket for good. Terminal and not reversible.',
   'ticket:delete': 'Hard-delete a Ticket and its conversation.',
   'user:invite': 'Invite a staff member into the tenant.',
   'user:deactivate': 'Deactivate a staff member and evict their sessions.',
@@ -81,6 +89,7 @@ export const ROLE_PERMISSIONS = {
   agent: [...SUPPORT_WORK],
   admin: [
     ...SUPPORT_WORK,
+    'ticket:close',
     'ticket:delete',
     'user:invite',
     'user:deactivate',

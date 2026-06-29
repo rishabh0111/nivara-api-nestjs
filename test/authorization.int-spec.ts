@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Client, QueryResultRow } from 'pg';
 import request from 'supertest';
+import { asOwner } from './helpers/as-owner';
 import { bootApp } from './helpers/boot';
 import { seededTenantIds } from './helpers/seeded-tenants';
 
@@ -295,29 +295,4 @@ async function cleanUpInvitees(): Promise<void> {
     "DELETE FROM \"user\" WHERE email LIKE 'invitee-%@meridian.test' OR (email = 'admin@sortwood.test' AND tenant_id = (SELECT id FROM tenant WHERE slug = 'meridian'))",
     [],
   );
-}
-
-/**
- * A query from outside the policy system, as the owner.
- *
- * The application could not run either of these: one asserts the absence of a
- * value across a whole table, and the other cleans up rows in a tenant no
- * credential in the test holds.
- */
-async function asOwner<T extends QueryResultRow>(
-  sql: string,
-  params: unknown[],
-): Promise<T[]> {
-  const client = new Client({
-    connectionString: process.env['MIGRATE_DATABASE_URL'],
-  });
-
-  await client.connect();
-
-  try {
-    const { rows } = await client.query<T>(sql, params);
-    return rows;
-  } finally {
-    await client.end();
-  }
 }

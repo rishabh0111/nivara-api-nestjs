@@ -35,4 +35,24 @@ export class AppException extends Error {
   static notFound(resource: string): AppException {
     return new AppException('not_found', `No such ${resource}.`);
   }
+
+  /**
+   * One refusal for every authorization failure, deliberately.
+   *
+   * A caller learning *which* permission they lack learns the shape of the
+   * tenant's authority model, and a caller able to tell "you may not" from
+   * "this endpoint is misconfigured" learns where to keep probing. Neither is
+   * actionable to a legitimate client: both mean ask an admin.
+   *
+   * Here rather than in the guard because the guard is not the only place
+   * authority is decided — an operation whose permission depends on the row it
+   * touches, like closing a Ticket, has to check in the service — and a second
+   * refusal message would be a side channel the guard's care did not close.
+   */
+  static forbidden(): AppException {
+    return new AppException(
+      'forbidden',
+      'This operation requires a permission your role does not hold.',
+    );
+  }
 }

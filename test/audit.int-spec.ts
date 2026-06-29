@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Client, QueryResultRow } from 'pg';
 import request from 'supertest';
+import { asOwner, asOwnerArmed, contactOf, userOf } from './helpers/as-owner';
 import { bootApp } from './helpers/boot';
 import { seededTenantIds } from './helpers/seeded-tenants';
 
@@ -493,110 +493,3 @@ describe('the audit log', () => {
     });
   });
 });
-
-async function contactOf(tenantId: string, email: string): Promise<string> {
-  return idOf('contact', tenantId, email);
-}
-
-async function userOf(tenantId: string, email: string): Promise<string> {
-  return idOf('"user"', tenantId, email);
-}
-
-async function idOf(
-  table: string,
-  tenantId: string,
-  email: string,
-): Promise<string> {
-  const rows = await asOwner<{ id: string }>(
-    `SELECT id::text FROM ${table} WHERE tenant_id = $1 AND email = $2`,
-    [tenantId, email],
-  );
-
-  if (rows.length === 0) {
-    throw new Error(
-      `Seeded ${table} ${email} is missing from tenant ${tenantId}. Run \`npm run db:seed\`.`,
-    );
-  }
-
-  return rows[0].id;
-}
-
-/**
- * A query from outside the policy system, as the owner.
- *
- * Used here for more than reading seeded ids: several of the claims above are
- * only meaningful if the *owner* is also refused, so this connection is the one
- * that proves append-only is a property of the table rather than of the grant
- * the application happens to hold.
- */
-async function asOwner<T extends QueryResultRow>(
-  sql: string,
-  params: unknown[],
-): Promise<T[]> {
-  return withOwnerClient((client) =>
-    client.query<T>(sql, params).then(({ rows }) => rows),
-  );
-}
-
-/** The context a statement runs under, as `withTenant()` would have armed it. */
-interface ArmedAs {
-  tenantId: string;
-  actorKind: 'user' | 'contact' | 'service' | 'system';
-  /** Empty for `system`, which has no row to point at. */
-  actorId?: string;
-}
-
-/**
- * A query as the owner, inside a transaction with the context settings armed.
- *
- * Hand-rolling what `withTenant()` does, rather than calling it, because these
- * tests are about what the *database* does with those settings — including the
- * cases the application's own path makes unreachable, like an insert that names
- * an actor of its own. Arming and querying are separate statements on one
- * connection: `set_config(..., true)` is transaction-local, and a bound
- * parameter forces the extended query protocol, which will not accept two
- * statements in one string.
- */
-async function asOwnerArmed<T extends QueryResultRow>(
-  armed: ArmedAs,
-  sql: string,
-  params: unknown[],
-): Promise<T[]> {
-  return withOwnerClient(async (client) => {
-    await client.query('BEGIN');
-
-    try {
-      await client.query(
-        `SELECT set_config('app.current_tenant', $1, true),
-                set_config('app.current_actor_kind', $2, true),
-                set_config('app.current_actor_id', $3, true)`,
-        [armed.tenantId, armed.actorKind, armed.actorId ?? ''],
-      );
-
-      const { rows } = await client.query<T>(sql, params);
-
-      await client.query('COMMIT');
-
-      return rows;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    }
-  });
-}
-
-async function withOwnerClient<T>(
-  work: (client: Client) => Promise<T>,
-): Promise<T> {
-  const client = new Client({
-    connectionString: process.env['MIGRATE_DATABASE_URL'],
-  });
-
-  await client.connect();
-
-  try {
-    return await work(client);
-  } finally {
-    await client.end();
-  }
-}

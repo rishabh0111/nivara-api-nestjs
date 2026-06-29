@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Client, QueryResultRow } from 'pg';
 import request from 'supertest';
+import { asOwner, contactOf, userOf } from './helpers/as-owner';
 import { bootApp } from './helpers/boot';
 import { seededTenantIds } from './helpers/seeded-tenants';
 
@@ -568,56 +568,3 @@ describe('tickets', () => {
     });
   });
 });
-
-/**
- * Reads seeded ids as the owner.
- *
- * The application cannot do this and should not be able to: resolving a
- * Contact id requires a tenant context, and the test needs ids from two
- * tenants at once precisely to show that neither can reach the other's.
- */
-async function contactOf(tenantId: string, email: string): Promise<string> {
-  return idOf('contact', tenantId, email);
-}
-
-async function userOf(tenantId: string, email: string): Promise<string> {
-  return idOf('"user"', tenantId, email);
-}
-
-async function idOf(
-  table: string,
-  tenantId: string,
-  email: string,
-): Promise<string> {
-  const rows = await asOwner<{ id: string }>(
-    `SELECT id::text FROM ${table} WHERE tenant_id = $1 AND email = $2`,
-    [tenantId, email],
-  );
-
-  if (rows.length === 0) {
-    throw new Error(
-      `Seeded ${table} ${email} is missing from tenant ${tenantId}. Run \`npm run db:seed\`.`,
-    );
-  }
-
-  return rows[0].id;
-}
-
-/** A query from outside the policy system, as the owner. */
-async function asOwner<T extends QueryResultRow>(
-  sql: string,
-  params: unknown[],
-): Promise<T[]> {
-  const client = new Client({
-    connectionString: process.env['MIGRATE_DATABASE_URL'],
-  });
-
-  await client.connect();
-
-  try {
-    const { rows } = await client.query<T>(sql, params);
-    return rows;
-  } finally {
-    await client.end();
-  }
-}

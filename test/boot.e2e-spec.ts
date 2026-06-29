@@ -9,6 +9,22 @@ import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
  * integration added later must stay dormant when unconfigured.
  */
 describe('boot tolerance', () => {
+  /**
+   * Every case here boots a fresh application through
+   * `bootAppUnderCurrentEnv()`, which resets the module registry and so pays
+   * for compiling the whole module graph again. That is inherent to what these
+   * assert — configuration is read when the module is *evaluated*, so a second
+   * boot under a different environment has to be a genuinely fresh one — and it
+   * takes well over Jest's 5s default when the suite runs in parallel on a busy
+   * machine.
+   *
+   * Raised rather than left to flake, because none of these tests is about how
+   * long a boot takes: each asserts that the application boots *at all* under a
+   * given environment. A timeout that fails on a loaded machine is a false
+   * report about configuration tolerance.
+   */
+  jest.setTimeout(30_000);
+
   const ABSENT = {
     GOOGLE_CLIENT_ID: undefined,
     GOOGLE_CLIENT_SECRET: undefined,

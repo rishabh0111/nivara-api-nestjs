@@ -26,6 +26,7 @@ import { CreateTicketDto } from './dto/create-ticket.dto';
 import { ListTicketsQuery } from './dto/list-tickets.dto';
 import { SetAssigneeDto } from './dto/set-assignee.dto';
 import { SetPriorityDto } from './dto/set-priority.dto';
+import { SetStateDto } from './dto/set-state.dto';
 import { TicketDto, toTicketDto } from './dto/ticket.dto';
 import { TicketService } from './ticket.service';
 
@@ -111,13 +112,13 @@ export class TicketsController {
     return toTicketDto(await this.tickets.findOne(principal, id));
   }
 
-  @Patch(':id/priority')
-  @RequiresPermission('ticket:priority')
+  @Patch(':id/state')
+  @RequiresPermission('ticket:transition')
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOperation({
-    summary: 'Set a Ticket’s priority',
+    summary: 'Move a Ticket to another state',
     description:
-      'Independent of state: priority is urgency and state is progress, and changing one never moves the other. Not a state transition, so the state machine is not consulted.',
+      'The active states `open`, `pending` and `on_hold` interconvert freely; any of them may be `resolved`; a `resolved` Ticket reopens to `open` or moves to `closed`. `closed` is terminal — nothing leads out of it, and a later reply from the Contact opens a new linked Ticket. An illegal move answers 409 and is refused by the database rather than by this service, so it is refused identically on every write path.\n\nMoving to `closed` additionally requires `ticket:close`, which `ticket:transition` does not imply. It is checked here rather than on the route because one endpoint serves every transition, so a route-level grant could not tell them apart — a caller holding `ticket:transition` alone reaches this operation and is refused only for that destination.',
   })
   @ApiOkResponse({ type: TicketDto })
   @ApiErrorResponses(
@@ -126,6 +127,34 @@ export class TicketsController {
     'unauthenticated',
     'forbidden',
     'not_found',
+    'conflict',
+  )
+  async transition(
+    @Principal() principal: RequestPrincipal,
+    @Param('id', UuidParam) id: string,
+    @Body() body: SetStateDto,
+  ): Promise<TicketDto> {
+    return toTicketDto(
+      await this.tickets.transition(principal, id, body.state),
+    );
+  }
+
+  @Patch(':id/priority')
+  @RequiresPermission('ticket:priority')
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Set a Ticket’s priority',
+    description:
+      'Independent of state: priority is urgency and state is progress, and changing one never moves the other. Not a state transition, so the transition table is not consulted. The single exception is a `closed` Ticket, which is a locked record — a priority edit on one answers 409.',
+  })
+  @ApiOkResponse({ type: TicketDto })
+  @ApiErrorResponses(
+    'malformed_request',
+    'validation_failed',
+    'unauthenticated',
+    'forbidden',
+    'not_found',
+    'conflict',
   )
   async setPriority(
     @Principal() principal: RequestPrincipal,
