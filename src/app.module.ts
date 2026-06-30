@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { GLOBAL_PROVIDERS } from './common/global-providers';
+import { ConversationModule } from './conversation/conversation.module';
 import { AppConfigModule } from './config/app-config.module';
 import { HealthModule } from './health/health.module';
 import { MetaModule } from './meta/meta.module';
@@ -16,6 +17,7 @@ import { TicketsModule } from './tickets/tickets.module';
     AuthModule,
     StaffModule,
     TicketsModule,
+    ConversationModule,
     AuditModule,
     HealthModule,
     MetaModule,

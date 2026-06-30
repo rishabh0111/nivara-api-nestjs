@@ -30,6 +30,8 @@ model Tenant {
   invitations   StaffInvitation[]
   tickets       Ticket[]
   auditLog      AuditLog[]
+  messages      Message[]
+  notes         Note[]
 
   @@map("tenant")
 }
@@ -46,11 +48,11 @@ enum UserRole {
 /// person working for two Tenants is two User rows, which is what lets every
 /// table be tenant-scoped with no cross-tenant exception (ADR-0001).
 model User {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  email     String
-  name      String
-  role      UserRole @default(agent)
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  email        String
+  name         String
+  role         UserRole @default(agent)
   /// Argon2id. Nullable because membership precedes credentials: an invite
   /// creates the User, and only accepting it sets a password. A User with no
   /// hash cannot sign in — there is nothing to compare against.
@@ -58,13 +60,13 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  refreshTokens RefreshToken[]
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens   RefreshToken[]
   /// Tickets this User is currently responsible for. There is no inverse for
   /// "tickets they closed" — that is an audit question, not a relation.
-  assignedTickets Ticket[]     @relation("TicketAssignee")
+  assignedTickets Ticket[]          @relation("TicketAssignee")
   /// The invitation that provisioned this User, if one did.
-  invitation    StaffInvitation? @relation("InvitedUser")
+  invitation      StaffInvitation?  @relation("InvitedUser")
   /// Invitations this User issued. Admin-only in practice, but the schema does
   /// not encode that — authority is the guard's business, not the FK's.
   invitationsSent StaffInvitation[] @relation("InvitingUser")
@@ -181,6 +183,11 @@ model Contact {
   tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   tickets Ticket[]
 
+  // No inverse for authored Messages. A Message's author is polymorphic —
+  // `authorKind`/`authorId`, which can name a Contact, a User or a service
+  // token — so it is not a foreign key and there is no relation to invert.
+  // See `Message` for why that is a deliberate trade rather than a gap.
+
   // An anonymous Contact has no email, and Postgres treats NULLs as distinct,
   // so this constrains identified Contacts without collapsing anonymous ones.
   @@unique([tenantId, email])
@@ -285,6 +292,16 @@ model Ticket {
   /// the Ticket they describe — see `AuditLog.ticket`.
   auditLog AuditLog[]
 
+  /// The customer-visible thread, and the agent-only one beside it. Two
+  /// relations because they are two tables — see `Note` for why that is the
+  /// whole point rather than a normalization choice.
+  messages Message[]
+  notes    Note[]
+
+  // The composite foreign-key target, as on `Contact` and `User`. Redundant as
+  // a uniqueness claim — `id` is already unique — and present only so anything
+  // referencing a Ticket can reference `(tenant_id, id)`. See `AuditLog.ticket`.
+  @@unique([tenantId, id])
   // The queue reads. Every one of these is `tenantId`-leading because every
   // query runs inside a tenant context — an index that omitted it would be
   // unusable for the only access pattern this table has.
@@ -296,10 +313,6 @@ model Ticket {
   @@index([tenantId, state, createdAt(sort: Desc)])
   @@index([tenantId, assigneeId, createdAt(sort: Desc)])
   @@index([tenantId, contactId])
-  // The composite foreign-key target, as on `Contact` and `User`. Redundant as
-  // a uniqueness claim — `id` is already unique — and present only so anything
-  // referencing a Ticket can reference `(tenant_id, id)`. See `AuditLog.ticket`.
-  @@unique([tenantId, id])
   @@map("ticket")
 }
 
@@ -420,4 +433,103 @@ model AuditLog {
 
   @@index([tenantId, ticketId, createdAt(sort: Desc), id(sort: Desc)])
   @@map("audit_log")
+}
+
+/// A customer-visible entry in a Ticket's thread.
+///
+/// The counterpart to `Note`, and the reason the two are separate tables is
+/// written up there. What belongs here is what a Message *is*: the thing the
+/// Contact can read. Every row in this table is publishable to the requester by
+/// definition, so "may this person see it" is never a per-row question.
+///
+/// There is no update path and no `updatedAt`. A Message is an utterance — it
+/// was sent, the Contact may already have read it, and a later correction is
+/// another Message rather than a rewrite of the first. This is a product claim
+/// rather than a database-enforced one: UPDATE is granted as it is on every
+/// other domain table, because redaction is a real requirement that will
+/// eventually arrive and it should arrive as a considered write path, not by
+/// re-granting a privilege the schema had taken away.
+model Message {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  ticketId String @map("ticket_id") @db.Uuid
+
+  /// What was said. Plain text on the wire; rendering is the console's
+  /// business, and storing markup would make this column a security surface.
+  body String
+
+  /// Who said it, stamped from the armed context by a trigger rather than
+  /// supplied — see `authorId`, and `conversation_stamp_author()` in the
+  /// migration, which stamps this table and `note` alike.
+  authorKind ActorKind @default(dbgenerated("current_actor_kind()")) @map("author_kind")
+
+  /// The polymorphic half. Not a foreign key, and that is the trade this shape
+  /// makes: a Message can be authored by a User, a Contact or a ServiceToken,
+  /// and three nullable exclusive-arc columns would be a worse lie — every
+  /// reader would still have to branch, and two of the three would always be
+  /// null. Referential integrity is given up for one column that always answers
+  /// "who", which is what makes deflection — the share of Messages authored by
+  /// `service` — a single GROUP BY rather than a join across three arcs.
+  ///
+  /// Null exactly when `authorKind` is `system`, the one actor with no row to
+  /// point at. A check constraint enforces the equivalence.
+  authorId String? @default(dbgenerated("current_actor_id()")) @map("author_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Composite per ADR-0002, and `Cascade` unlike `AuditLog.ticket`: a thread
+  /// is part of the Ticket rather than a record about it, so it has no meaning
+  /// once the Ticket is gone.
+  ticket Ticket @relation(fields: [tenantId, ticketId], references: [tenantId, id], onDelete: Cascade)
+
+  // The only read this table has: one Ticket's thread, keyset-paginated. The
+  // `(createdAt, id)` tail is what makes that traversal servable, and a DESC
+  // index serves the ascending scan too — Postgres reads it backwards.
+  @@index([tenantId, ticketId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("message")
+}
+
+/// An agent-only internal entry on a Ticket, never visible to a Contact.
+///
+/// A separate table rather than `Message.internal = true`, and this is the one
+/// decision the conversation model is built around. A boolean would make every
+/// customer-facing read a query that must remember to filter — the endpoint
+/// that serves the portal, the widget's transcript, an export, the AI layer's
+/// context window — and each of those is one forgotten `WHERE` away from
+/// showing a customer what an agent said about them. Here there is no clause to
+/// forget: the customer-visible read names `message`, and a Note is not in it.
+/// Invisibility is structural, so the failure mode is a missing feature rather
+/// than a leak.
+///
+/// Deliberately the same shape as `Message` down to the column names, so the
+/// two thread reads are the same code path with a different table — and *not*
+/// a shared base table with a discriminator, which would put them back in one
+/// place and hand the boolean its `WHERE` clause again.
+model Note {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  ticketId String @map("ticket_id") @db.Uuid
+
+  body String
+
+  /// Polymorphic and stamped by `conversation_stamp_author()`, exactly as on
+  /// `Message`.
+  ///
+  /// Not narrowed to `user`, though a Contact authoring an agent-only entry is
+  /// incoherent. Two reasons: the AI layer writes Notes under a `service`
+  /// actor, and a Contact never reaches this table anyway — `note:write` is not
+  /// in any grant a Contact can hold, so the exclusion is already enforced by
+  /// the authorization model rather than needing a second statement of it here.
+  authorKind ActorKind @default(dbgenerated("current_actor_kind()")) @map("author_kind")
+  authorId   String?   @default(dbgenerated("current_actor_id()")) @map("author_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ticket Ticket @relation(fields: [tenantId, ticketId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, ticketId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("note")
 }

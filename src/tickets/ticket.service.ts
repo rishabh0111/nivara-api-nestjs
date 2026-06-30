@@ -3,6 +3,7 @@ import { AuditService } from '../audit/audit.service';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { permissionsFor } from '../authz/permissions';
 import { AppException } from '../common/errors/app-exception';
+import { isForeignKeyViolation } from '../common/errors/prisma-errors';
 import {
   keysetPlan,
   SortableFields,
@@ -334,20 +335,6 @@ const readBack = async (tx: TenantClient, id: string): Promise<Ticket> => {
 
   return ticket;
 };
-
-/**
- * Whether a write named a row that, from inside this tenant context, does not
- * exist.
- *
- * `P2003` is Prisma's foreign-key constraint failure. Matched structurally
- * rather than with `instanceof`, for the reason `InvitationService` gives: the
- * generated client's error classes are not necessarily the ones a future
- * client version constructs, and getting this wrong turns a 404 into a 500.
- */
-const isForeignKeyViolation = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  (error as { code?: unknown }).code === 'P2003';
 
 /**
  * The state machine's refusals, and what a client is told about each.
