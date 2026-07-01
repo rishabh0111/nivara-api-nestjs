@@ -129,4 +129,45 @@ describe('resolving a principal to permissions', () => {
 
     expect(admin.has('user:invite')).toBe(true);
   });
+
+  /**
+   * The claim ticket 09 rests on: a Contact is not a weak agent.
+   *
+   * Asserted over the *whole* catalog rather than against a handful of
+   * interesting permissions, because the interesting ones are the ones nobody
+   * thought to list. A permission added later is covered by this test the day
+   * it is added, and granting one to a Contact would have to be a deliberate
+   * act that breaks it.
+   */
+  it('resolves a contact to no staff authority whatsoever', () => {
+    const permissions = permissionsFor({
+      kind: 'contact',
+      tenantId: 'tenant',
+      contactId: 'contact',
+    });
+
+    expect(permissions.size).toBe(0);
+
+    for (const permission of PERMISSIONS) {
+      expect(permissions.has(permission)).toBe(false);
+    }
+  });
+
+  /**
+   * Specifically the two a Contact might look like it should hold. Reading your
+   * own thread and replying on your own Ticket are things a Contact really can
+   * do — through the portal surface, bounded by row ownership, and *not* by
+   * holding the grants an agent uses to do them to anyone's Ticket.
+   */
+  it('does not give a contact the staff grants that resemble portal actions', () => {
+    const permissions = permissionsFor({
+      kind: 'contact',
+      tenantId: 'tenant',
+      contactId: 'contact',
+    });
+
+    expect(permissions.has('ticket:read')).toBe(false);
+    expect(permissions.has('ticket:reply')).toBe(false);
+    expect(permissions.has('note:read')).toBe(false);
+  });
 });

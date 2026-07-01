@@ -42,7 +42,14 @@ import { PermissionGuard } from '../authz/permission.guard';
   // `PasswordService` travels with the module that defines what a stored
   // credential looks like: accepting an invitation writes a hash this module's
   // sign-in has to verify, so both sides must use one configuration.
-  exports: [AccessTokenService, PasswordService],
+  //
+  // `RefreshTokenService` is exported for the portal, which mints sessions for
+  // Contacts out of the same ledger. Deliberately the same instance over the
+  // same table rather than a portal copy: rotation and replay detection are the
+  // parts of a session that must not exist twice, because two implementations
+  // of "has this token been spent" is one implementation that eventually says no
+  // when the other says yes.
+  exports: [AccessTokenService, PasswordService, RefreshTokenService],
 })
 export class AuthModule implements NestModule {
   /**

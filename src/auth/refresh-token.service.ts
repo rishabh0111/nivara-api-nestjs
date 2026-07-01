@@ -34,6 +34,18 @@ export interface IssuedRefreshToken {
 }
 
 /**
+ * Whose session this is.
+ *
+ * A discriminated pair rather than two nullable ids, so a caller cannot read the
+ * wrong one: refreshing a portal session has to `switch` on `kind` to get at an
+ * id at all, and there is no shape in which both are readable at once. The
+ * database says the same thing with a check constraint; this is that constraint
+ * expressed in the type system, on the way back out.
+ */
+export type SessionSubject =
+  { kind: 'user'; userId: string } | { kind: 'contact'; contactId: string };
+
+/**
  * A verdict, plus the row it was reached about.
  *
  * `unknown` is its own arm rather than a null, because a token that matches no
@@ -42,7 +54,7 @@ export interface IssuedRefreshToken {
  */
 export type PresentedTokenOutcome =
   | { outcome: 'unknown' }
-  | { verdict: RefreshVerdict; userId: string; familyId: string };
+  | { verdict: RefreshVerdict; subject: SessionSubject; familyId: string };
 
 /**
  * The refresh-token ledger.
@@ -58,10 +70,15 @@ export class RefreshTokenService {
   /**
    * Begins a family. Called once per sign-in, and never again for that session
    * — every later token is a rotation of this one.
+   *
+   * Takes a `SessionSubject` rather than a `userId`, which is what makes one
+   * ledger serve both axes. A portal session and a staff session differ in this
+   * argument and in nothing else: same rotation, same replay detection, same
+   * windows.
    */
   async issue(
     tx: TenantClient,
-    input: { tenantId: string; userId: string; now: Date },
+    input: { tenantId: string; subject: SessionSubject; now: Date },
   ): Promise<IssuedRefreshToken> {
     return this.write(tx, {
       ...input,
@@ -73,9 +90,12 @@ export class RefreshTokenService {
   /**
    * Resolves a presented token to a verdict.
    *
-   * Looks up by hash alone. The row's `userId` comes back from storage rather
+   * Looks up by hash alone. The row's subject comes back from storage rather
    * than from anything the caller said, so a token cannot be presented on
-   * behalf of a different User than the one it was issued to.
+   * behalf of a different principal than the one it was issued to — and, now
+   * that there are two kinds of principal, cannot be presented as the wrong
+   * *kind* either. A portal refresh token names a Contact in the column, so the
+   * staff refresh path reading it finds no user arm and refuses.
    */
   async classify(
     tx: TenantClient,
@@ -88,9 +108,16 @@ export class RefreshTokenService {
 
     if (!row) return { outcome: 'unknown' };
 
+    const subject = subjectOf(row);
+
+    // Only reachable if the exclusive-arc check constraint were dropped. A
+    // session with no subject is refused like an unrecognized token rather than
+    // throwing, because the safe answer on a credential path is "no".
+    if (!subject) return { outcome: 'unknown' };
+
     return {
       verdict: classifyPresentedToken(row, now),
-      userId: row.userId,
+      subject,
       familyId: row.familyId,
     };
   }
@@ -123,13 +150,18 @@ export class RefreshTokenService {
 
     if (!predecessor) return null;
 
-    // Tenant, user and family all come off the predecessor row rather than
+    const subject = subjectOf(predecessor);
+
+    if (!subject) return null;
+
+    // Tenant, subject and family all come off the predecessor row rather than
     // from the caller. A successor is by definition the same session as the
     // token it replaces, so there is no argument a caller could pass here that
-    // would be anything but a way to get it wrong.
+    // would be anything but a way to get it wrong — including, now, the kind of
+    // principal it belongs to.
     return this.write(tx, {
       tenantId: predecessor.tenantId,
-      userId: predecessor.userId,
+      subject,
       now: input.now,
       familyId: predecessor.familyId,
       // Copied, never recomputed. Recomputing it here is how a sliding window
@@ -160,7 +192,7 @@ export class RefreshTokenService {
     tx: TenantClient,
     input: {
       tenantId: string;
-      userId: string;
+      subject: SessionSubject;
       now: Date;
       familyId: string;
       familyExpiresAt: Date;
@@ -171,7 +203,7 @@ export class RefreshTokenService {
     await tx.refreshToken.create({
       data: {
         tenantId: input.tenantId,
-        userId: input.userId,
+        ...columnsFor(input.subject),
         // The only place the raw token is turned into what is stored. It is
         // never written anywhere in its usable form.
         tokenHash: hashToken(token),
@@ -184,3 +216,34 @@ export class RefreshTokenService {
     return { token };
   }
 }
+
+/**
+ * The stored arc, read back as a subject — or `null` if the row has neither.
+ *
+ * The one place the two nullable columns are turned into the discriminated pair
+ * everything else works with, so no caller ever holds a row and has to decide
+ * which id is the real one.
+ */
+const subjectOf = (row: {
+  userId: string | null;
+  contactId: string | null;
+}): SessionSubject | null => {
+  if (row.userId) return { kind: 'user', userId: row.userId };
+  if (row.contactId) return { kind: 'contact', contactId: row.contactId };
+
+  return null;
+};
+
+/**
+ * A subject as the columns that store it, with the unused arm explicitly null.
+ *
+ * Both columns are always named, rather than one being omitted, so the write
+ * satisfies the exclusive-arc constraint by construction — a spread that
+ * happened to carry a stale `userId` from elsewhere cannot survive this.
+ */
+const columnsFor = (
+  subject: SessionSubject,
+): { userId: string | null; contactId: string | null } =>
+  subject.kind === 'user'
+    ? { userId: subject.userId, contactId: null }
+    : { userId: null, contactId: subject.contactId };

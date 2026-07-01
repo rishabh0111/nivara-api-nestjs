@@ -37,6 +37,25 @@ export class MessageService {
    * method makes — which is what lets a later deflection metric count
    * `service`-authored Messages and be believed.
    *
+   * The visibility check ahead of the write is deliberate, and it was
+   * deliberately *absent* until the Contact principal arrived — the reasoning
+   * has changed, so the code has. The old argument was that the composite
+   * foreign key on `(tenant_id, ticket_id)` already refused every Ticket this
+   * caller could not legitimately write to, making a pre-read the same answer
+   * plus a race. That was true while the only boundary was the tenant.
+   *
+   * It stopped being true with a second axis inside one tenant. A Contact
+   * posting to another Contact's Ticket names a `ticket_id` that genuinely
+   * exists in this tenant, so the foreign key is satisfied and the row is
+   * refused instead by the policy's `WITH CHECK` — which arrives as a bare
+   * privilege error, not the `P2003` the catch below reads, and would surface as
+   * a 500. The right answer is the same 404 every other invisible Ticket gets.
+   *
+   * Both guards are kept. The check answers the ownership case; the catch still
+   * answers the cross-tenant one and the genuine race where a Ticket is deleted
+   * between the two statements. They run in one transaction, so the read and the
+   * write cannot disagree about a Ticket that merely changed.
+   *
    * Posting on a `closed` Ticket is not refused here. Whether a reply reopens a
    * Ticket, starts a linked one, or is turned away is ticket 10's question, and
    * answering half of it now would mean a rule in this method that the reply
@@ -47,11 +66,13 @@ export class MessageService {
     ticketId: string,
     body: string,
   ): Promise<Message> {
-    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
-      tx.message
+    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
+      await assertTicketVisible(tx, ticketId);
+
+      return tx.message
         .create({ data: { tenantId: principal.tenantId, ticketId, body } })
-        .catch(rethrowMissingTicket),
-    );
+        .catch(rethrowMissingTicket);
+    });
   }
 
   /** A page of one Ticket's Messages — and only Messages. */

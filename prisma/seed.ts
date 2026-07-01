@@ -99,6 +99,14 @@ const seedTenant = async (
   }
 
   for (const contact of spec.contacts) {
+    // A portal credential for the identified Contacts and none for the
+    // anonymous one, which is the honest split rather than a convenience: a
+    // Contact with no email is exactly the widget-born case that has no way to
+    // sign in, and seeding it a password would hide that the portal refuses it.
+    const passwordHash = contact.email
+      ? await argon2.hash(SEED_PASSWORD, { type: argon2.argon2id })
+      : null;
+
     // The anonymous Contact has no email, so there is no natural key to upsert
     // on — Postgres treats NULLs as distinct and re-running would pile up
     // duplicates. Match on "this tenant's emailless contact" instead.
@@ -109,12 +117,14 @@ const seedTenant = async (
     if (existing) {
       await prisma.contact.update({
         where: { id: existing.id },
-        data: { name: contact.name, verified: contact.verified },
+        data: { name: contact.name, verified: contact.verified, passwordHash },
       });
       continue;
     }
 
-    await prisma.contact.create({ data: { tenantId: tenant.id, ...contact } });
+    await prisma.contact.create({
+      data: { tenantId: tenant.id, ...contact, passwordHash },
+    });
   }
 
   console.log(`Seeded tenant ${spec.slug} (${tenant.id})`);
@@ -128,7 +138,8 @@ const main = async (): Promise<void> => {
   // Printed rather than documented in a README that would drift: signing in
   // needs the tenant's id, and only this run knows it.
   console.log(
-    `\nSign in at POST /auth/sign-in with any seeded address and password ${JSON.stringify(SEED_PASSWORD)}, quoting the tenant id printed above.`,
+    `\nSign in at POST /auth/sign-in with any seeded staff address and password ${JSON.stringify(SEED_PASSWORD)}, quoting the tenant id printed above.` +
+      `\nThe portal is POST /portal/auth/sign-in, with a seeded Contact address (jules@example.test, sam@example.test) and the same password.`,
   );
 };
 

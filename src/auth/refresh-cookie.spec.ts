@@ -1,4 +1,6 @@
 import {
+  PORTAL_REFRESH_COOKIE,
+  STAFF_REFRESH_COOKIE,
   decodeRefreshCookie,
   encodeRefreshCookie,
   refreshCookieOptions,
@@ -57,11 +59,11 @@ describe('the refresh cookie flags', () => {
   /**
    * The flags are the security property, not a preference. `httpOnly` is what
    * keeps a page script from lifting the credential; without `path` the cookie
-   * would ride along on every API call rather than only the one route that
-   * consumes it.
+   * would ride along on every API call rather than only the routes that
+   * consume it.
    */
   it('is httpOnly, same-site, and scoped to the auth routes', () => {
-    expect(refreshCookieOptions(false)).toMatchObject({
+    expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, false)).toMatchObject({
       httpOnly: true,
       sameSite: 'lax',
       path: '/auth',
@@ -69,7 +71,45 @@ describe('the refresh cookie flags', () => {
   });
 
   it('is marked secure in production and not over plain-http development', () => {
-    expect(refreshCookieOptions(true).secure).toBe(true);
-    expect(refreshCookieOptions(false).secure).toBe(false);
+    expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, true).secure).toBe(true);
+    expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, false).secure).toBe(
+      false,
+    );
+  });
+
+  /**
+   * Each surface scopes to the routes that actually serve it.
+   *
+   * `Path` is matched by prefix, and `/auth` does not prefix `/portal/auth` —
+   * so a shared path would mean a browser never sending the portal its own
+   * refresh cookie, and portal sessions expiring at fifteen minutes with no
+   * refresh and nothing in any log to say why. The names differ so both
+   * sessions can coexist in one browser rather than evicting each other.
+   */
+  it('gives each surface its own name and path', () => {
+    expect(STAFF_REFRESH_COOKIE).toEqual({
+      name: 'nivara_refresh',
+      path: '/auth',
+    });
+
+    expect(PORTAL_REFRESH_COOKIE).toEqual({
+      name: 'nivara_portal_refresh',
+      path: '/portal/auth',
+    });
+
+    expect(PORTAL_REFRESH_COOKIE.name).not.toBe(STAFF_REFRESH_COOKIE.name);
+
+    // The portal's path must not be reachable by the staff cookie's scope.
+    expect(
+      PORTAL_REFRESH_COOKIE.path.startsWith(STAFF_REFRESH_COOKIE.path),
+    ).toBe(false);
+  });
+
+  it('carries each surface’s own path into the options it builds', () => {
+    expect(refreshCookieOptions(PORTAL_REFRESH_COOKIE, false)).toMatchObject({
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/portal/auth',
+    });
   });
 });

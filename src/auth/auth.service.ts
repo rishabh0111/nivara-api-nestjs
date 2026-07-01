@@ -7,9 +7,11 @@ import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import {
   RequestPrincipal,
+  StaffPrincipal,
   systemContextFor,
   tenantContextFor,
 } from './request-principal';
+import { rotateRefreshSession } from './session-rotation';
 
 /** What a sign-in or a refresh produces: one of each half of a session. */
 export interface Session {
@@ -87,7 +89,7 @@ export class AuthService {
 
         const refresh = await this.refreshTokens.issue(tx, {
           tenantId: input.tenantId,
-          userId: user.id,
+          subject: { kind: 'user', userId: user.id },
           now,
         });
 
@@ -104,62 +106,45 @@ export class AuthService {
    * The read and the rotation share one transaction because the gap between
    * them is the race: two requests that both read a live row would both rotate
    * it, and the second would be indistinguishable from theft. `rotate()`
-   * closes it with a conditional update, and this keeps that update in the same
-   * transaction as the verdict that authorized it.
+   * closes it with a conditional update, and `rotateRefreshSession` keeps that
+   * update in the same transaction as the verdict that authorized it.
+   *
+   * The sequence itself lives in `session-rotation.ts` because the portal
+   * performs exactly the same one. What is staff-specific is the two lines
+   * below: this axis re-reads a `user`, and builds a principal carrying a role.
    */
   async refresh(input: { tenantId: string; token: string }): Promise<Session> {
     const now = new Date();
 
     const session = await this.tenancy.withTenant(
       systemContextFor(input.tenantId),
-      async (tx) => {
-        const found = await this.refreshTokens.classify(tx, input.token, now);
-
-        if ('outcome' in found) return null;
-
-        const { verdict, userId, familyId } = found;
-
-        if (verdict.outcome === 'replay') {
-          await this.refreshTokens.revokeFamily(tx, familyId, now);
-
-          // Worth a log line where the other refusals are not: this one says a
-          // token was held by two parties, which is a security event rather than
-          // an expired session.
-          this.logger.warn(
-            `Refresh token replay detected; revoked family ${familyId} for user ${userId} in tenant ${input.tenantId}.`,
-          );
-
-          return null;
-        }
-
-        if (verdict.outcome === 'reject') return null;
-
-        // Re-read rather than trust the token's claim of a role: the fifteen
-        // minutes an access token is good for is the window a stale role may
-        // survive, and minting a fresh one from a stale copy would extend that
-        // window indefinitely across a long-lived session.
-        const user = await tx.user.findFirst({ where: { id: userId } });
-
-        if (!user) return null;
-
-        const rotated = await this.refreshTokens.rotate(tx, {
+      (tx) =>
+        rotateRefreshSession<RequestPrincipal>({
+          refreshTokens: this.refreshTokens,
+          tx,
           token: input.token,
           now,
-        });
-
-        // Lost the race described above. The winner rotated it; this caller
-        // retries and reads a spent row, which is the replay path.
-        if (!rotated) return null;
-
-        const principal: RequestPrincipal = {
-          kind: 'user',
+          expect: 'user',
+          logger: this.logger,
+          label: 'Refresh',
           tenantId: input.tenantId,
-          userId: user.id,
-          role: user.role,
-        };
+          // Re-read rather than trusting the token's claim of a role: the
+          // fifteen minutes an access token is good for is the window a stale
+          // role may survive, and minting a fresh one from a stale copy would
+          // extend that window indefinitely across a long-lived session.
+          resolve: async (client, userId) => {
+            const user = await client.user.findFirst({ where: { id: userId } });
 
-        return { principal, refreshToken: rotated.token };
-      },
+            if (!user) return null;
+
+            return {
+              kind: 'user',
+              tenantId: input.tenantId,
+              userId: user.id,
+              role: user.role,
+            };
+          },
+        }),
     );
 
     return this.issueSession(session);
@@ -195,9 +180,14 @@ export class AuthService {
    * under `tenantContextFor()`, which is what makes it evidence that the
    * token's tenant claim reaches row-level security rather than just an echo
    * of the token back to its bearer.
+   *
+   * Narrowed to `StaffPrincipal` rather than branching on kind. A Contact
+   * describing itself is the portal's `GET /portal/auth/me`, over the Contact
+   * row, and the type is what keeps the two from becoming one method with a
+   * union return that every caller then has to unpick.
    */
   async currentUser(
-    principal: RequestPrincipal,
+    principal: StaffPrincipal,
   ): Promise<{ id: string; email: string; name: string; role: UserRole }> {
     const user = await this.tenancy.withTenant(
       tenantContextFor(principal),

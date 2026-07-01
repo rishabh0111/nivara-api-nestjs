@@ -133,7 +133,25 @@ model StaffInvitation {
 model RefreshToken {
   id       String @id @default(uuid(7)) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
-  userId   String @map("user_id") @db.Uuid
+
+  /// The session's subject, as an exclusive arc: exactly one of these is set,
+  /// enforced by a check constraint rather than by the writer's care.
+  ///
+  /// Two nullable foreign keys rather than the polymorphic `authorKind`/`authorId`
+  /// pair `Message` uses, and the two shapes are right for opposite reasons. A
+  /// Message's author is one of *four* kinds including `system`, is read far more
+  /// often than it is joined, and is what makes deflection a single GROUP BY —
+  /// so giving up referential integrity buys something. Here the subject is one
+  /// of exactly two kinds, both of which are real rows, and the column is only
+  /// ever used to look one of them up. There is nothing to buy: an arc keeps the
+  /// foreign keys, and the cascade that evicts a deleted principal's sessions.
+  ///
+  /// A staff session and a portal session are otherwise identical — same
+  /// rotation, same family-wide replay eviction, same sliding and absolute
+  /// windows — because they are the same mechanism serving two axes, not two
+  /// mechanisms that happen to look alike.
+  userId    String? @map("user_id") @db.Uuid
+  contactId String? @map("contact_id") @db.Uuid
 
   /// `sha256(token)`, hex. The raw token exists only in the response cookie.
   /// Unhashed it would make a database read a set of usable credentials.
@@ -158,7 +176,16 @@ model RefreshToken {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Composite per ADR-0002, as every tenant-scoped reference is — including
+  /// the `user` arc, which was plain before this table learned a second subject.
+  /// It is upgraded here rather than left alone: adding a correct constraint
+  /// beside a known-weak one would make the table's own rules disagree, and the
+  /// column was being altered anyway. Optional-to-optional, exactly as
+  /// `AuditLog.ticket` is — the pair is nullable through its id half while
+  /// `tenantId` stays required.
+  user    User?    @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  contact Contact? @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade)
 
   // Presented tokens are looked up by hash alone. Unique per tenant rather
   // than globally: the hash is the lookup key inside an armed context, and RLS
@@ -172,16 +199,31 @@ model RefreshToken {
 /// (created from an anonymous widget visitor) or verified (portal OAuth or a
 /// confirmed email).
 model Contact {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  email     String?
-  name      String?
-  verified  Boolean  @default(false)
+  id       String  @id @default(uuid(7)) @db.Uuid
+  tenantId String  @map("tenant_id") @db.Uuid
+  email    String?
+  name     String?
+  verified Boolean @default(false)
+
+  /// Argon2id, as on `User`, and nullable for a stronger reason than there.
+  /// Most Contacts never have one: a widget visitor is a Contact from their
+  /// first Message and has no credential at all. A hash here is what makes a
+  /// Contact able to sign into the portal, and signing in is only possible for
+  /// a Contact that has been identified — so this column and `verified` move
+  /// together in practice, without the schema claiming they must.
+  ///
+  /// The seam this leaves open is registration. Nothing in this API sets a
+  /// Contact's password yet; the seed does it for the demo Contacts. A portal
+  /// sign-up or a confirmed-email flow lands here and changes nothing else,
+  /// because everything downstream reads the principal rather than the credential.
+  passwordHash String? @map("password_hash")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tickets Ticket[]
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tickets       Ticket[]
+  refreshTokens RefreshToken[]
 
   // No inverse for authored Messages. A Message's author is polymorphic —
   // `authorKind`/`authorId`, which can name a Contact, a User or a service

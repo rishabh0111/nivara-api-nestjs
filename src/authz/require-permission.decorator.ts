@@ -1,5 +1,6 @@
 import { CustomDecorator, SetMetadata, applyDecorators } from '@nestjs/common';
 import { ApiExtension } from '@nestjs/swagger';
+import { RequestPrincipal } from '../auth/request-principal';
 import { Permission } from './permissions';
 
 /** Where `PermissionGuard` reads an operation's requirement from. */
@@ -7,6 +8,9 @@ export const PERMISSION_KEY = 'authz:permission';
 
 /** Where it reads the deliberate absence of one from. */
 export const AUTHENTICATED_ONLY_KEY = 'authz:authenticated-only';
+
+/** Where it reads an operation's required principal kind from. */
+export const PRINCIPAL_KIND_KEY = 'authz:principal-kind';
 
 /**
  * Declares the permission an operation requires.
@@ -24,6 +28,36 @@ export const RequiresPermission = (
   applyDecorators(
     SetMetadata(PERMISSION_KEY, permission),
     ApiExtension('x-required-permission', permission),
+  );
+
+/**
+ * Declares which kind of principal an operation serves.
+ *
+ * The second authority axis, and a different question from `@RequiresPermission`
+ * rather than a coarser version of it. A permission asks "may this caller do
+ * this to any row it can see"; this asks "is this caller the sort of principal
+ * this surface exists for at all".
+ *
+ * The portal needs it because a Contact holds no permissions by design — its
+ * reach is row ownership, enforced beneath the application by row-level
+ * security — so a portal route has no grant to name and would otherwise be
+ * refused by the fail-closed rule. Staff routes use it where the *inverse*
+ * matters: `GET /auth/me` reads a User row, and a Contact reaching it would be
+ * asking for a row that does not describe them.
+ *
+ * Published as `x-required-principal-kind` for the same reason the permission is
+ * published: a downstream repo mapping tools onto endpoints needs to know which
+ * credential a given operation even accepts.
+ */
+export const RequiresPrincipalKind = (
+  // Drawn from the union rather than re-spelled, so the `service` arm ticket 12
+  // adds becomes namable here the moment it exists — and so this list cannot
+  // quietly fall behind the one the guard compares against.
+  kind: RequestPrincipal['kind'],
+): ReturnType<typeof applyDecorators> =>
+  applyDecorators(
+    SetMetadata(PRINCIPAL_KIND_KEY, kind),
+    ApiExtension('x-required-principal-kind', kind),
   );
 
 /**

@@ -107,14 +107,32 @@ export const ROLE_PERMISSIONS = {
  * row rather than through a role, and the guard above will not notice the
  * difference. Keeping the branch here rather than in the guard is what makes
  * "one authorization path" true rather than aspirational.
+ *
+ * A Contact takes the empty branch, and the emptiness is the design rather than
+ * a gap waiting to be filled. Customer access is a row-ownership axis — "which
+ * Tickets are mine", answered by row-level security against `contactId` — and
+ * not a smaller pile of the same grants staff hold. Anything a Contact can do
+ * is reached through the portal surface, which is authorized by principal
+ * *kind*; a permission granted here would instead let a Contact do that thing to
+ * any Ticket in the tenant, which is precisely the collapse of the two axes the
+ * model exists to prevent.
  */
 export const permissionsFor = (
   principal: RequestPrincipal,
-): ReadonlySet<Permission> =>
+): ReadonlySet<Permission> => {
+  if (principal.kind !== 'user') return EMPTY;
+
   // `?? []` rather than an index that trusts the map to be total. A role the
-  // map does not cover — a token minted before an enum value was retired, or a
-  // principal type that has no role at all — must resolve to *no* authority,
-  // not to an exception. Throwing here would surface as a 500 and, worse,
-  // would be the one path in the request that fails open in spirit: an
-  // unhandled error is not a refusal anybody audited.
-  new Set(ROLE_PERMISSIONS[principal.role] ?? []);
+  // map does not cover — a token minted before an enum value was retired —
+  // must resolve to *no* authority, not to an exception. Throwing here would
+  // surface as a 500 and, worse, would be the one path in the request that
+  // fails open in spirit: an unhandled error is not a refusal anybody audited.
+  return new Set(ROLE_PERMISSIONS[principal.role] ?? []);
+};
+
+/**
+ * Shared because it is immutable and every non-staff principal resolves to it.
+ * `ReadonlySet` is the return type, so a caller has no supported way to mutate
+ * this into a grant.
+ */
+const EMPTY: ReadonlySet<Permission> = new Set<Permission>();

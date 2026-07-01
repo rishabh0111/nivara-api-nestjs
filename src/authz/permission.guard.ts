@@ -10,11 +10,13 @@ import {
   PRINCIPAL_KEY,
   PUBLIC_KEY,
 } from '../auth/auth.guard';
+import { RequestPrincipal } from '../auth/request-principal';
 import { AppException } from '../common/errors/app-exception';
 import { Permission, permissionsFor } from './permissions';
 import {
   AUTHENTICATED_ONLY_KEY,
   PERMISSION_KEY,
+  PRINCIPAL_KIND_KEY,
 } from './require-permission.decorator';
 
 /**
@@ -67,6 +69,17 @@ export class PermissionGuard implements CanActivate {
       );
     }
 
+    // The kind axis, checked first and independently of the permission axis.
+    // A caller of the wrong kind is refused before any question about grants,
+    // because on the surfaces that declare a kind the grant question is not the
+    // one being asked — a Contact at a staff route holds nothing, and a staff
+    // principal at a portal route holds too much of the wrong thing.
+    const requiredKind = this.reflector.getAllAndOverride<
+      RequestPrincipal['kind'] | undefined
+    >(PRINCIPAL_KIND_KEY, sources);
+
+    if (requiredKind && principal.kind !== requiredKind) throw forbidden();
+
     const required = this.reflector.getAllAndOverride<Permission | undefined>(
       PERMISSION_KEY,
       sources,
@@ -80,11 +93,18 @@ export class PermissionGuard implements CanActivate {
 
       if (authenticatedOnly) return true;
 
+      // A required kind is itself an authority decision, so an operation that
+      // declared one has satisfied the fail-closed rule without also naming a
+      // permission. This is what lets the portal's routes exist: a Contact's
+      // authority is being a Contact plus owning the row, and there is no grant
+      // for those routes to name.
+      if (requiredKind) return true;
+
       // Logged as an error because it is one — a route reached production
       // without an authority decision having been made about it. The caller
       // gets a plain refusal; the operator gets the reason.
       this.logger.error(
-        `Refused ${context.getClass().name}.${context.getHandler().name}: it declares no @RequiresPermission() and is not @AuthenticatedOnly() or @Public().`,
+        `Refused ${context.getClass().name}.${context.getHandler().name}: it declares no @RequiresPermission() or @RequiresPrincipalKind() and is not @AuthenticatedOnly() or @Public().`,
       );
 
       throw forbidden();

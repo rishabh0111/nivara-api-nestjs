@@ -17,13 +17,17 @@ import { NotesController } from './notes.controller';
  * log: conversation is domain data attributed on its own rows. The state
  * changes a message *causes* are audited by whatever makes them.
  *
- * `TenancyService` arrives from the global `TenancyModule`. Nothing is exported
- * — the SLA clocks and realtime fan-out that will care about Messages arriving
- * are later tickets, and they should take the seam they need rather than the
- * one guessed for them now.
+ * `TenancyService` arrives from the global `TenancyModule`.
+ *
+ * `MessageService` is exported and `NoteService` is emphatically not. The portal
+ * serves a Contact its own customer-visible thread and needs the first; nothing
+ * outside this module has any business holding the second, and the export list
+ * is where that stops being a convention. A future surface that wants Notes has
+ * to add itself here, in a diff a reviewer sees.
  */
 @Module({
   controllers: [MessagesController, NotesController],
   providers: [MessageService, NoteService],
+  exports: [MessageService],
 })
 export class ConversationModule {}

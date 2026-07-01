@@ -6,6 +6,7 @@ import { ConversationModule } from './conversation/conversation.module';
 import { AppConfigModule } from './config/app-config.module';
 import { HealthModule } from './health/health.module';
 import { MetaModule } from './meta/meta.module';
+import { PortalModule } from './portal/portal.module';
 import { StaffModule } from './staff/staff.module';
 import { TenancyModule } from './tenancy/tenancy.module';
 import { TicketsModule } from './tickets/tickets.module';
@@ -18,6 +19,7 @@ import { TicketsModule } from './tickets/tickets.module';
     StaffModule,
     TicketsModule,
     ConversationModule,
+    PortalModule,
     AuditModule,
     HealthModule,
     MetaModule,

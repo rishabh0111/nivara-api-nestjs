@@ -17,7 +17,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { AuthenticatedOnly } from '../authz/require-permission.decorator';
+import {
+  AuthenticatedOnly,
+  RequiresPrincipalKind,
+} from '../authz/require-permission.decorator';
 import { ApiErrorResponses } from '../common/errors/api-error-responses.decorator';
 import { AppException } from '../common/errors/app-exception';
 import { AppConfigService } from '../config/app-config.service';
@@ -29,12 +32,14 @@ import { SignInDto } from './dto/sign-in.dto';
 import { Principal } from './principal.decorator';
 import {
   REFRESH_COOKIE,
+  STAFF_REFRESH_COOKIE,
   clearRefreshCookie,
   decodeRefreshCookie,
   encodeRefreshCookie,
+  readRefreshCookie,
   setRefreshCookie,
 } from './refresh-cookie';
-import { RequestPrincipal } from './request-principal';
+import { StaffPrincipal } from './request-principal';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -84,10 +89,16 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<SessionDto> {
-    const cookie = decodeRefreshCookie(this.cookieValue(request));
+    const cookie = decodeRefreshCookie(
+      readRefreshCookie(request, STAFF_REFRESH_COOKIE),
+    );
 
     if (!cookie) {
-      clearRefreshCookie(response, this.config.isProduction);
+      clearRefreshCookie(
+        response,
+        STAFF_REFRESH_COOKIE,
+        this.config.isProduction,
+      );
       throw new AppException('unauthenticated', 'No refresh token presented.');
     }
 
@@ -99,7 +110,11 @@ export class AuthController {
       // A token the server will not accept again should stop being sent.
       // Left in place, a client retries it forever and every retry after an
       // eviction reads as fresh theft.
-      clearRefreshCookie(response, this.config.isProduction);
+      clearRefreshCookie(
+        response,
+        STAFF_REFRESH_COOKIE,
+        this.config.isProduction,
+      );
       throw error;
     }
   }
@@ -118,11 +133,17 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<void> {
-    const cookie = decodeRefreshCookie(this.cookieValue(request));
+    const cookie = decodeRefreshCookie(
+      readRefreshCookie(request, STAFF_REFRESH_COOKIE),
+    );
 
     if (cookie) await this.auth.signOut(cookie);
 
-    clearRefreshCookie(response, this.config.isProduction);
+    clearRefreshCookie(
+      response,
+      STAFF_REFRESH_COOKIE,
+      this.config.isProduction,
+    );
   }
 
   /**
@@ -137,18 +158,24 @@ export class AuthController {
    */
   @Get('me')
   // Describing yourself to yourself is not an authority anyone holds over
-  // anyone, so this operation genuinely requires no permission — said out loud,
-  // because the authorization guard refuses anything that stays silent.
+  // anyone, so this operation requires no *permission* — said out loud, because
+  // the authorization guard refuses anything that stays silent.
+  //
+  // It does require a kind. This reads a User row, and a Contact asking for one
+  // is asking for a row that does not describe it: the honest answer is a
+  // refusal rather than a 404 that reads as "your account is missing". The
+  // portal's `GET /portal/auth/me` is where a Contact describes itself.
   @AuthenticatedOnly()
+  @RequiresPrincipalKind('user')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'The authenticated principal',
+    summary: 'The authenticated staff principal',
     description:
-      'Resolved from the presented credential alone. Reads the User row inside the tenant context the token arms, so a response here is evidence the whole chain is wired.',
+      'Resolved from the presented credential alone. Reads the User row inside the tenant context the token arms, so a response here is evidence the whole chain is wired. A portal token is refused — a Contact describes itself at `GET /portal/auth/me`.',
   })
   @ApiOkResponse({ type: PrincipalDto })
-  @ApiErrorResponses('unauthenticated', 'not_found')
-  async me(@Principal() principal: RequestPrincipal): Promise<PrincipalDto> {
+  @ApiErrorResponses('unauthenticated', 'forbidden', 'not_found')
+  async me(@Principal() principal: StaffPrincipal): Promise<PrincipalDto> {
     const user = await this.auth.currentUser(principal);
 
     return {
@@ -161,18 +188,10 @@ export class AuthController {
     };
   }
 
-  private cookieValue(request: Request): string | undefined {
-    // `cookie-parser` widens `Request['cookies']` to `any`; narrow it back at
-    // the one place the application reads it.
-    const cookies = request.cookies as Record<string, unknown> | undefined;
-    const value = cookies?.[REFRESH_COOKIE];
-
-    return typeof value === 'string' ? value : undefined;
-  }
-
   private respondWith(session: Session, response: Response): SessionDto {
     setRefreshCookie(
       response,
+      STAFF_REFRESH_COOKIE,
       encodeRefreshCookie(session.principal.tenantId, session.refreshToken),
       this.config.isProduction,
     );

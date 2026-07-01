@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import { PasswordService } from '../auth/password.service';
 import {
-  RequestPrincipal,
+  StaffPrincipal,
   systemContextFor,
   tenantContextFor,
 } from '../auth/request-principal';
@@ -65,9 +65,15 @@ export class InvitationService {
    * left room for with a nullable `passwordHash`, and it is why an invited
    * person cannot sign in until they accept: there is nothing to compare a
    * password against.
+   *
+   * Takes a `StaffPrincipal` rather than the whole principal union, because the
+   * invitation records *which User* issued it and a Contact has no id that could
+   * stand in. The route already requires `user:invite`, which no Contact holds,
+   * so this narrowing adds no runtime check — it stops the type from claiming a
+   * caller shape this method could not actually serve.
    */
   async invite(
-    principal: RequestPrincipal,
+    principal: StaffPrincipal,
     input: { email: string; name: string; role: UserRole },
   ): Promise<IssuedInvitation> {
     const now = new Date();

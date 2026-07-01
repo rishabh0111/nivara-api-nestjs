@@ -11,17 +11,34 @@ export const ACCESS_TOKEN_ISSUER = 'nivara-desk';
 export const ACCESS_TOKEN_AUDIENCE = 'nivara-api';
 
 /**
- * The claims a staff access token carries, and nothing more.
+ * The claims an access token carries, and nothing more.
  *
  * `tenantId` is the load-bearing one: it is the sole authority for which
- * tenant a request acts in, and what `withTenant()` is armed from. `role` is
- * carried rather than looked up so the common path costs no query — the
- * fifteen-minute lifetime is what bounds how stale it can be.
+ * tenant a request acts in, and what `withTenant()` is armed from.
+ *
+ * `kind` is the second, and it arrived with the portal. One secret signs both
+ * staff and Contact tokens, so a signature no longer says *what* the bearer is
+ * — only that this server minted it. This claim is what says, and it is written
+ * explicitly rather than left to be inferred from whether `role` is present:
+ * identity by shape is identity by accident.
+ *
+ * `role` is carried on the staff arm rather than looked up so the common path
+ * costs no query — the fifteen-minute lifetime is what bounds how stale it can
+ * be. There is no contact equivalent, because a Contact has no role to go stale.
  */
-export interface AccessTokenClaims {
+export type AccessTokenClaims = StaffTokenClaims | ContactTokenClaims;
+
+export interface StaffTokenClaims {
+  kind: 'user';
   sub: string;
   tenantId: string;
   role: UserRole;
+}
+
+export interface ContactTokenClaims {
+  kind: 'contact';
+  sub: string;
+  tenantId: string;
 }
 
 /**
@@ -40,11 +57,19 @@ export class AccessTokenService {
   ) {}
 
   async sign(principal: RequestPrincipal): Promise<string> {
-    const claims: AccessTokenClaims = {
-      sub: principal.userId,
-      tenantId: principal.tenantId,
-      role: principal.role,
-    };
+    const claims: AccessTokenClaims =
+      principal.kind === 'user'
+        ? {
+            kind: 'user',
+            sub: principal.userId,
+            tenantId: principal.tenantId,
+            role: principal.role,
+          }
+        : {
+            kind: 'contact',
+            sub: principal.contactId,
+            tenantId: principal.tenantId,
+          };
 
     return this.jwt.signAsync(claims, {
       secret: this.config.jwtSecret,
@@ -91,17 +116,46 @@ const ROLES: string[] = Object.values(UserRole);
 const isRole = (value: unknown): value is UserRole =>
   typeof value === 'string' && ROLES.includes(value);
 
-/** Exported for the unit tests, which exercise the claim shape without a key. */
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value !== '';
+
+/**
+ * Exported for the unit tests, which exercise the claim shape without a key.
+ *
+ * The `kind` switch is the security boundary between the two surfaces, and the
+ * two branches are deliberately disjoint rather than one branch with optional
+ * extras. `role` is read only on the staff arm, so a Contact's token carrying a
+ * role claim — which nothing in this server would mint, and which is exactly
+ * what a forgery attempt looks like — resolves to a Contact with no authority
+ * rather than to a question about precedence.
+ *
+ * An unrecognized or absent `kind` is refused rather than defaulted. Defaulting
+ * to `user` would promote every claim-less token to staff; defaulting to
+ * `contact` would still let a token's shape decide who its bearer is. `service`
+ * is refused here today and becomes a third arm in ticket 12 — until it does, a
+ * token naming it is one this server did not issue.
+ */
 export const principalFromClaims = (
   claims: unknown,
 ): RequestPrincipal | null => {
   if (typeof claims !== 'object' || claims === null) return null;
 
-  const { sub, tenantId, role } = claims as Record<string, unknown>;
+  const { kind, sub, tenantId, role } = claims as Record<string, unknown>;
 
-  if (typeof sub !== 'string' || sub === '') return null;
-  if (typeof tenantId !== 'string' || tenantId === '') return null;
-  if (!isRole(role)) return null;
+  // Common to both arms: without a subject there is nobody to be, and without a
+  // tenant there is no context to arm.
+  if (!isNonEmptyString(sub)) return null;
+  if (!isNonEmptyString(tenantId)) return null;
 
-  return { kind: 'user', tenantId, userId: sub, role };
+  if (kind === 'user') {
+    if (!isRole(role)) return null;
+
+    return { kind: 'user', tenantId, userId: sub, role };
+  }
+
+  if (kind === 'contact') {
+    return { kind: 'contact', tenantId, contactId: sub };
+  }
+
+  return null;
 };

@@ -8,7 +8,7 @@ import {
 } from '@nestjs/swagger';
 import { Public } from '../auth/auth.guard';
 import { Principal } from '../auth/principal.decorator';
-import { RequestPrincipal } from '../auth/request-principal';
+import { StaffPrincipal } from '../auth/request-principal';
 import { RequiresPermission } from '../authz/require-permission.decorator';
 import { ApiErrorResponses } from '../common/errors/api-error-responses.decorator';
 import { AcceptInvitationDto } from './dto/accept-invitation.dto';
@@ -37,7 +37,10 @@ export class InvitationsController {
     'conflict',
   )
   async invite(
-    @Principal() principal: RequestPrincipal,
+    // Staff by construction: `user:invite` is a grant only a role confers, so
+    // the guard has already refused every other kind of principal by the time
+    // this runs.
+    @Principal() principal: StaffPrincipal,
     @Body() body: InviteStaffDto,
   ): Promise<InvitationDto> {
     const invitation = await this.invitations.invite(principal, body);
