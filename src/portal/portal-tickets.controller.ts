@@ -17,6 +17,7 @@ import { UuidParam } from '../common/validation/uuid-param.pipe';
 import { CreateMessageDto } from '../conversation/dto/create-message.dto';
 import { ListThreadQuery } from '../conversation/dto/list-thread.dto';
 import { MessageDto, toMessageDto } from '../conversation/dto/message.dto';
+import { ContactReplyService } from '../conversation/contact-reply.service';
 import { MessageService } from '../conversation/message.service';
 import { ListTicketsQuery } from '../tickets/dto/list-tickets.dto';
 import { TicketDto, toTicketDto } from '../tickets/dto/ticket.dto';
@@ -57,6 +58,7 @@ export class PortalTicketsController {
   constructor(
     private readonly tickets: TicketService,
     private readonly messages: MessageService,
+    private readonly replies: ContactReplyService,
   ) {}
 
   @Post()
@@ -162,7 +164,7 @@ export class PortalTicketsController {
   @ApiOperation({
     summary: 'Reply on my Ticket',
     description:
-      'Attributed to the signed-in Contact, stamped from the credential by a database trigger rather than claimed by the request — which is what makes `authorKind` trustworthy enough to compute deflection from. Posting on a Ticket that is not mine answers 404.',
+      'Attributed to the signed-in Contact, stamped from the credential by a database trigger rather than claimed by the request — which is what makes `authorKind` trustworthy enough to compute deflection from. Posting on a Ticket that is not mine answers 404.\n\nA reply is not only a Message: it moves the Ticket it lands on. A `pending` or `resolved` Ticket reopens to `open`, because the customer has said the matter is not finished. A `closed` Ticket is terminal and is not revived — the reply opens a **new linked Ticket** with a fresh clock, inheriting the requester and its place in the conversation but nothing else, and becomes that Ticket’s first Message. If the conversation already has a Ticket that is not closed, the reply joins it rather than starting another, so replying repeatedly does not produce duplicates.\n\nBecause of that, the Message returned may belong to a different Ticket than the one addressed — read `ticketId` on the response rather than assuming, and read that Ticket\u2019s thread to see the reply in place. `GET /tickets/:id/conversation`, which returns a whole chain at once, is a staff endpoint and is not reachable from this surface.',
   })
   @ApiCreatedResponse({ type: MessageDto })
   @ApiErrorResponses(
@@ -171,12 +173,24 @@ export class PortalTicketsController {
     'unauthenticated',
     'forbidden',
     'not_found',
+    'conflict',
   )
   async reply(
     @Principal() principal: ContactPrincipal,
     @Param('id', UuidParam) id: string,
     @Body() body: CreateMessageDto,
   ): Promise<MessageDto> {
-    return toMessageDto(await this.messages.post(principal, id, body.body));
+    const { message } = await this.replies.reply(
+      principal,
+      id,
+      body.body,
+      // The channel this reply physically arrived on. Hard-coded because it is a
+      // property of *this surface*, not of the request — a client that could
+      // name its own Source could make widget traffic look like portal traffic
+      // and quietly rewrite the tenant's channel analytics.
+      'portal',
+    );
+
+    return toMessageDto(message);
   }
 }

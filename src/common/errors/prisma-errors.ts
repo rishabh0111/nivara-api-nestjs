@@ -18,3 +18,32 @@ export const isForeignKeyViolation = (error: unknown): boolean =>
   typeof error === 'object' &&
   error !== null &&
   (error as { code?: unknown }).code === 'P2003';
+
+/**
+ * Whether a write lost a uniqueness race.
+ *
+ * Both the Prisma code and the raw SQLSTATE, because this schema's uniqueness
+ * is not all declared the way Prisma understands it. `ticket_one_live_per_chain`
+ * is a partial index over an *expression* — neither of which Prisma models — so
+ * a violation of it can arrive from the driver adapter as a bare `23505` with
+ * the `P2002` translation never applied. Matching only the Prisma code would
+ * make the invariant that stops a burst of replies fanning out into duplicate
+ * Tickets surface as a 500.
+ *
+ * Structural rather than `instanceof`, for the reason above: the generated
+ * client's error classes are not guaranteed to be the ones a running process
+ * imported.
+ */
+export const isUniqueViolation = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null) return false;
+
+  if ((error as { code?: unknown }).code === 'P2002') return true;
+
+  const cause = (error as { cause?: unknown }).cause;
+
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    (cause as { code?: unknown }).code === '23505'
+  );
+};

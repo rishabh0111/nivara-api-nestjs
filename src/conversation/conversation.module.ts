@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { TicketsModule } from '../tickets/tickets.module';
+import { ContactReplyService } from './contact-reply.service';
 import { MessageService } from './message.service';
 import { MessagesController } from './messages.controller';
 import { NoteService } from './note.service';
@@ -24,10 +26,21 @@ import { NotesController } from './notes.controller';
  * outside this module has any business holding the second, and the export list
  * is where that stops being a convention. A future surface that wants Notes has
  * to add itself here, in a diff a reviewer sees.
+ *
+ * `TicketsModule` arrived with ticket 10, and the direction of that dependency
+ * is the design: a Contact's reply can reopen or spawn a Ticket, so conversation
+ * knows about tickets and tickets know nothing about conversation. The reverse
+ * edge is what a Message hook inside the state machine would have created, and
+ * it would have put reply semantics in the middle of the queue.
+ *
+ * `ContactReplyService` is exported for the portal, the only surface that can
+ * produce a Contact's reply today. The widget and Slack ingestion join it later
+ * on exactly the same terms — they differ only in the Source they pass.
  */
 @Module({
+  imports: [TicketsModule],
   controllers: [MessagesController, NotesController],
-  providers: [MessageService, NoteService],
-  exports: [MessageService],
+  providers: [ContactReplyService, MessageService, NoteService],
+  exports: [ContactReplyService, MessageService],
 })
 export class ConversationModule {}

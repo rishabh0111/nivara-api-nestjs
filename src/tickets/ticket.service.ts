@@ -3,7 +3,11 @@ import { AuditService } from '../audit/audit.service';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { permissionsFor } from '../authz/permissions';
 import { AppException } from '../common/errors/app-exception';
-import { isForeignKeyViolation } from '../common/errors/prisma-errors';
+import { ErrorCode } from '../common/errors/error-codes';
+import {
+  isForeignKeyViolation,
+  isUniqueViolation,
+} from '../common/errors/prisma-errors';
 import {
   keysetPlan,
   SortableFields,
@@ -19,6 +23,7 @@ import {
   TicketState,
 } from '../generated/prisma/client';
 import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
+import { inChainWith } from './chain';
 import { canTransition } from './state-machine';
 import { TicketFilters, ticketWhere } from './ticket-filters';
 
@@ -38,6 +43,14 @@ export interface CreateTicketInput {
   subject: string;
   contactId: string;
   source: TicketSource;
+  /**
+   * The closed Ticket whose reply produced this one, when there is one.
+   *
+   * The *only* linkage input, and `rootTicketId` is conspicuously absent: the
+   * root is derived by the database from this parent, so there is no call site
+   * that could compute it wrongly. A caller names the fact it knows.
+   */
+  spawnedFromTicketId?: string;
 }
 
 export interface ListTicketsInput extends TicketFilters {
@@ -90,43 +103,70 @@ export class TicketService {
     principal: RequestPrincipal,
     input: CreateTicketInput,
   ): Promise<Ticket> {
-    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
-      const ticket = await tx.ticket
-        .create({
-          data: {
-            tenantId: principal.tenantId,
-            subject: input.subject,
-            contactId: input.contactId,
-            source: input.source,
-          },
-        })
-        .catch((error: unknown) => {
-          if (isForeignKeyViolation(error))
-            throw AppException.notFound('Contact');
+    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
+      this.createIn(tx, principal, input),
+    );
+  }
 
-          throw error;
-        });
+  /**
+   * The same creation, inside a transaction the caller already owns.
+   *
+   * Exists because spawning a linked Ticket is not one write: the Ticket, its
+   * audit row, and the Contact's reply as its first Message all have to commit
+   * together. A spawned Ticket with no Message would be a thread born empty and
+   * a first-response clock with nothing to measure from, which is exactly the
+   * half-state the reply path exists to avoid.
+   *
+   * The `tx`-first shape is the one `AuditService.record` established, and for
+   * the same reason: composition across services is a transaction question, and
+   * a method that opened its own would silently break the atomicity its caller
+   * is relying on.
+   */
+  async createIn(
+    tx: TenantClient,
+    principal: RequestPrincipal,
+    input: CreateTicketInput,
+  ): Promise<Ticket> {
+    const ticket = await tx.ticket
+      .create({
+        data: {
+          tenantId: principal.tenantId,
+          subject: input.subject,
+          contactId: input.contactId,
+          source: input.source,
+          // Named, never derived here. `rootTicketId` is absent from this
+          // object on purpose: the trigger computes it from the parent, so the
+          // denormalized column cannot disagree with the ancestry it
+          // summarizes — in this port or in any other.
+          spawnedFromTicketId: input.spawnedFromTicketId ?? null,
+        },
+      })
+      .catch((error: unknown) => {
+        if (isForeignKeyViolation(error))
+          throw AppException.notFound('Contact');
 
-      // `toValue` is the state the Ticket was born in, not its subject: this is
-      // the control-plane record, and what it captures about a creation is where
-      // the Ticket entered the state machine. The subject is domain data and
-      // lives on the Ticket itself.
-      //
-      // No `metadata`. Source and priority are columns on the Ticket, readable
-      // there at any time — copying them here would make the entry a partial,
-      // silently-stale duplicate of a row it already points at. `metadata` is
-      // for facts with nowhere else to live, like the scopes a minted token
-      // carried.
-      await this.audit.record(tx, {
-        action: AuditAction.ticket_created,
-        targetKind: 'ticket',
-        targetId: ticket.id,
-        ticketId: ticket.id,
-        toValue: ticket.state,
+        rethrowTicketRefusal(error);
       });
 
-      return ticket;
+    // `toValue` is the state the Ticket was born in, not its subject: this is
+    // the control-plane record, and what it captures about a creation is where
+    // the Ticket entered the state machine. The subject is domain data and
+    // lives on the Ticket itself.
+    //
+    // No `metadata`, and linkage does not change that. `spawnedFromTicketId`
+    // and `rootTicketId` are columns on the Ticket, readable there at any time
+    // and immutable besides — copying them here would make the entry a partial
+    // duplicate of a row it already points at. `metadata` is for facts with
+    // nowhere else to live, like the scopes a minted token carried.
+    await this.audit.record(tx, {
+      action: AuditAction.ticket_created,
+      targetKind: 'ticket',
+      targetId: ticket.id,
+      ticketId: ticket.id,
+      toValue: ticket.state,
     });
+
+    return ticket;
   }
 
   /** One Ticket, or the 404 that another tenant's Ticket is indistinguishable from. */
@@ -203,40 +243,64 @@ export class TicketService {
     id: string,
     to: TicketState,
   ): Promise<Ticket> {
-    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
-      const current = await tx.ticket.findUnique({ where: { id } });
+    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
+      this.transitionIn(tx, principal, id, to),
+    );
+  }
 
-      if (!current) throw AppException.notFound('Ticket');
+  /**
+   * The same move, inside a transaction the caller already owns.
+   *
+   * The reply path needs it: a Contact's reply to a `pending` or `resolved`
+   * Ticket reopens it *and* posts the Message, and those are one act. Committing
+   * the reopen without the Message would put a Ticket back in an agent's queue
+   * with nothing new on it to read; committing the Message without the reopen
+   * would leave the customer's reply sitting on a Ticket nobody is looking at.
+   *
+   * A Contact reaches this holding no permissions at all, and that is correct
+   * rather than a hole: `canTransition` attaches authority only to `closed`, and
+   * a reply never moves a Ticket there. The reopen is audited as the Contact's,
+   * by the same trigger that permitted it, which is the honest attribution — the
+   * customer is who caused it.
+   */
+  async transitionIn(
+    tx: TenantClient,
+    principal: RequestPrincipal,
+    id: string,
+    to: TicketState,
+  ): Promise<Ticket> {
+    const current = await tx.ticket.findUnique({ where: { id } });
 
-      // The same refusal the guard gives, from `AppException.forbidden`: a
-      // caller who learned that *this* transition specifically needs
-      // `ticket:close` would have learned the shape of the tenant's authority
-      // model from an endpoint the route-level grant already let them reach.
-      if (!canTransition(current.state, to, permissionsFor(principal))) {
-        throw AppException.forbidden();
-      }
+    if (!current) throw AppException.notFound('Ticket');
 
-      const { count } = await tx.ticket
-        .updateMany({
-          where: { id, state: current.state },
-          data: { state: to },
-        })
-        .catch(rethrowStateMachineRefusal);
+    // The same refusal the guard gives, from `AppException.forbidden`: a
+    // caller who learned that *this* transition specifically needs
+    // `ticket:close` would have learned the shape of the tenant's authority
+    // model from an endpoint the route-level grant already let them reach.
+    if (!canTransition(current.state, to, permissionsFor(principal))) {
+      throw AppException.forbidden();
+    }
 
-      if (count === 0) {
-        throw new AppException(
-          'conflict',
-          'The Ticket changed state while this request was in flight. Read it again and retry.',
-        );
-      }
+    const { count } = await tx.ticket
+      .updateMany({
+        where: { id, state: current.state },
+        data: { state: to },
+      })
+      .catch(rethrowTicketRefusal);
 
-      // No audit call. `ticket.transitioned` is written by the trigger that
-      // permitted the move, in the same statement — recording it here as well
-      // would double every entry, and recording it *only* here would leave the
-      // guarantee resting on this call site rather than on the schema.
+    if (count === 0) {
+      throw new AppException(
+        'conflict',
+        'The Ticket changed state while this request was in flight. Read it again and retry.',
+      );
+    }
 
-      return readBack(tx, id);
-    });
+    // No audit call. `ticket.transitioned` is written by the trigger that
+    // permitted the move, in the same statement — recording it here as well
+    // would double every entry, and recording it *only* here would leave the
+    // guarantee resting on this call site rather than on the schema.
+
+    return readBack(tx, id);
   }
 
   /**
@@ -289,6 +353,51 @@ export class TicketService {
   }
 
   /**
+   * The whole conversation this Ticket belongs to, root to current.
+   *
+   * A chain rather than a tree, and readable as a narrative: the origin first,
+   * then each Ticket a reply spawned, in the order they happened. A Ticket that
+   * has never been closed-and-replied-to is a chain of one, which is the common
+   * case and deliberately not a special one — a caller never has to ask whether
+   * a conversation exists before reading it.
+   *
+   * One flat query, no recursion. `rootTicketId` is denormalized precisely so
+   * this is `WHERE id = root OR rootTicketId = root` against an index, rather
+   * than a `WITH RECURSIVE` that each of the three ports would have to
+   * reimplement in its own dialect.
+   *
+   * The `?? id` is the null-origin convention: a Ticket with no root *is* the
+   * root. Reading the anchor Ticket first is also what makes an invisible one a
+   * 404 rather than an empty chain — an empty list would be a claim about a
+   * Ticket the caller must not learn exists — and it happens in the same
+   * transaction as the chain read, so the two cannot disagree about visibility.
+   *
+   * Unpaginated, in the list envelope. A chain grows only when a closed Ticket
+   * is replied to, so it is bounded by how many times a conversation has been
+   * finished and resumed — a handful, not a feed. Paginating it would hand a
+   * client a fragment of a narrative and make "read the conversation" a loop.
+   */
+  async conversation(
+    principal: RequestPrincipal,
+    id: string,
+  ): Promise<Ticket[]> {
+    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
+      const anchor = await tx.ticket.findUnique({ where: { id } });
+
+      if (!anchor) throw AppException.notFound('Ticket');
+
+      return tx.ticket.findMany({
+        where: inChainWith(anchor),
+        // Ascending, unlike every other list in this API. A queue is read
+        // newest-first because the top of it is the work; a conversation is
+        // read oldest-first because it is a story, and the standard default
+        // would render it backwards.
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+    });
+  }
+
+  /**
    * The shared edit path.
    *
    * `updateMany` rather than `update`, because `update` on an invisible row
@@ -305,7 +414,7 @@ export class TicketService {
     return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
       const { count } = await tx.ticket
         .updateMany({ where: { id }, data })
-        .catch(rethrowStateMachineRefusal);
+        .catch(rethrowTicketRefusal);
 
       if (count === 0) throw AppException.notFound('Ticket');
 
@@ -337,36 +446,91 @@ const readBack = async (tx: TenantClient, id: string): Promise<Ticket> => {
 };
 
 /**
- * The state machine's refusals, and what a client is told about each.
+ * The refusals the `ticket` triggers raise, and what a client is told about
+ * each.
  *
- * Keyed by the custom SQLSTATE the trigger raises rather than by its message.
- * The trigger's wording is a diagnostic aimed at whoever is reading a log —
- * it names the Ticket, the states, and a SQL function to go look at — so
- * branching on it would make this API's error codes a function of that prose
- * and would break the day someone improves it. A SQLSTATE is the contract
- * between the schema and every port of it; the prose is not.
+ * Keyed by the custom SQLSTATE rather than by the message. The trigger's
+ * wording is a diagnostic aimed at whoever is reading a log — it names the
+ * Ticket, the states, and a SQL function to go look at — so branching on it
+ * would make this API's error codes a function of that prose and would break
+ * the day someone improves it. A SQLSTATE is the contract between the schema
+ * and every port of it; the prose is not.
  *
- * Every entry is `conflict` rather than `validation_failed`, which is why the
- * code is not part of the table: the request is well-formed and would have
- * been fine against a Ticket in another state. What is wrong is the state of
- * the resource, which is what 409 means — and the remedy is to re-read the
- * Ticket, not to fix a field.
+ * The `code` is part of each entry rather than shared, because the table
+ * outgrew the state machine when linkage arrived and the entries no longer
+ * agree on one. Three of them are `conflict`: the request is well-formed and
+ * would have been fine against a Ticket in another state, so what is wrong is
+ * the state of the resource — which is what 409 means, and the remedy is to
+ * re-read rather than to fix a field. `TK003` is the exception and is a 404,
+ * because a parent this context cannot see is indistinguishable from one that
+ * does not exist; saying anything else would turn the spawn path into a probe
+ * for another Contact's Tickets.
  */
-const STATE_MACHINE_REFUSALS = {
-  TK001:
-    'That is not a legal transition for this Ticket in its current state. Read it again to see where it is.',
-  TK002:
-    'A closed Ticket is a finished record: neither its priority nor its assignee can be changed.',
-} as const;
+const TICKET_REFUSALS = {
+  TK001: {
+    code: 'conflict',
+    message:
+      'That is not a legal transition for this Ticket in its current state. Read it again to see where it is.',
+  },
+  TK002: {
+    code: 'conflict',
+    message:
+      'A closed Ticket is a finished record: neither its priority nor its assignee can be changed.',
+  },
+  TK003: {
+    code: 'not_found',
+    message: 'No such Ticket is visible to this principal.',
+  },
+  TK004: {
+    code: 'conflict',
+    message:
+      'A conversation\u2019s ancestry is set when a Ticket is created and cannot be rewritten.',
+  },
+} as const satisfies Record<string, { code: ErrorCode; message: string }>;
 
-type StateMachineSqlstate = keyof typeof STATE_MACHINE_REFUSALS;
+type TicketSqlstate = keyof typeof TICKET_REFUSALS;
 
-/** Turns a trigger refusal into a 409, and rethrows anything else untouched. */
-function rethrowStateMachineRefusal(error: unknown): never {
-  const sqlstate = stateMachineSqlstate(error);
+/** Turns a trigger refusal into an API error, and rethrows anything else untouched. */
+function rethrowTicketRefusal(error: unknown): never {
+  const sqlstate = ticketSqlstate(error);
 
-  if (sqlstate)
-    throw new AppException('conflict', STATE_MACHINE_REFUSALS[sqlstate]);
+  if (sqlstate) {
+    const { code, message } = TICKET_REFUSALS[sqlstate];
+
+    throw new AppException(code, message);
+  }
+
+  throw error;
+}
+
+/**
+ * The one-live-per-chain unique index, lost as a race.
+ *
+ * Two replies to the same closed Ticket arrived together, both read no live
+ * Ticket, and both tried to spawn one — `ticket_one_live_per_chain` is what
+ * stops the second becoming a duplicate the queue then carries forever.
+ *
+ * Deliberately *not* folded into `rethrowTicketRefusal`, though it was at first.
+ * That function is reached by every write on this table, including priority and
+ * assignee edits, and a uniqueness constraint added to `ticket` for some
+ * unrelated reason would then have surfaced from a priority change as "another
+ * reply was handled first" — a message about a feature the caller was not using.
+ * A translation this specific belongs at the one call site whose failure it
+ * actually describes.
+ *
+ * A 409 rather than a silent retry that appends to whichever Ticket won.
+ * Retrying here would mean deciding, from inside a failed transaction, that the
+ * caller meant something other than what they asked for; re-reading and replying
+ * again is the same act, made by the client that knows whether it still wants
+ * to.
+ */
+export function rethrowChainConflict(error: unknown): never {
+  if (isUniqueViolation(error)) {
+    throw new AppException(
+      'conflict',
+      'Another reply on this conversation was handled first. Read the conversation again and reply to its live Ticket.',
+    );
+  }
 
   throw error;
 }
@@ -377,13 +541,11 @@ function rethrowStateMachineRefusal(error: unknown): never {
  * A trigger's `RAISE` is not a failure mode Prisma has a `P`-code for, so it
  * arrives as a driver adapter error carrying the raw Postgres fields on
  * `cause`. Read structurally rather than through `instanceof`, for the reason
- * the foreign-key check above gives: the generated client's error classes are
- * not guaranteed to be the ones a future client version constructs, and getting
+ * the foreign-key check does: the generated client's error classes are not
+ * guaranteed to be the ones a future client version constructs, and getting
  * this wrong turns a 409 into a 500.
  */
-const stateMachineSqlstate = (
-  error: unknown,
-): StateMachineSqlstate | undefined => {
+const ticketSqlstate = (error: unknown): TicketSqlstate | undefined => {
   if (typeof error !== 'object' || error === null) return undefined;
 
   const cause = (error as { cause?: unknown }).cause;
@@ -392,7 +554,7 @@ const stateMachineSqlstate = (
 
   const code = (cause as { code?: unknown }).code;
 
-  return typeof code === 'string' && code in STATE_MACHINE_REFUSALS
-    ? (code as StateMachineSqlstate)
+  return typeof code === 'string' && code in TICKET_REFUSALS
+    ? (code as TicketSqlstate)
     : undefined;
 };

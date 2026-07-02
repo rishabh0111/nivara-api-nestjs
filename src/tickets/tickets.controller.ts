@@ -112,6 +112,30 @@ export class TicketsController {
     return toTicketDto(await this.tickets.findOne(principal, id));
   }
 
+  @Get(':id/conversation')
+  @RequiresPermission('ticket:read')
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Read the whole conversation this Ticket belongs to',
+    description:
+      'The chain of Tickets linked by reply-on-closed, oldest first, so it reads as a narrative from where the customer first got in touch to where the work is now. A Ticket that has never been closed-and-replied-to is a chain of one — the common case, and deliberately not a special one, so a client never has to ask whether a conversation exists before reading it.\n\nAny Ticket in a chain returns the same chain: the endpoint is addressed by whichever Ticket you happen to hold, not only by the origin.\n\nIn the standard list envelope but never paginated — `nextCursor` is always null. A chain grows only when a closed Ticket is replied to, so it is bounded by how many times a conversation has been finished and resumed, and handing back a fragment of a narrative would make reading one a loop.',
+  })
+  @ApiPaginatedResponse(TicketDto)
+  @ApiErrorResponses(
+    'malformed_request',
+    'unauthenticated',
+    'forbidden',
+    'not_found',
+  )
+  async conversation(
+    @Principal() principal: RequestPrincipal,
+    @Param('id', UuidParam) id: string,
+  ): Promise<Page<TicketDto>> {
+    const chain = await this.tickets.conversation(principal, id);
+
+    return { data: chain.map(toTicketDto), nextCursor: null };
+  }
+
   @Patch(':id/state')
   @RequiresPermission('ticket:transition')
   @ApiParam({ name: 'id', format: 'uuid' })

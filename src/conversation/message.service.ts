@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { buildPage, Page } from '../common/pagination/page';
 import { Message } from '../generated/prisma/client';
-import { TenancyService } from '../tenancy/tenancy.service';
+import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
 import {
   assertTicketVisible,
   ListThreadInput,
@@ -66,13 +66,37 @@ export class MessageService {
     ticketId: string,
     body: string,
   ): Promise<Message> {
-    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
-      await assertTicketVisible(tx, ticketId);
+    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
+      this.postIn(tx, principal, ticketId, body),
+    );
+  }
 
-      return tx.message
-        .create({ data: { tenantId: principal.tenantId, ticketId, body } })
-        .catch(rethrowMissingTicket);
-    });
+  /**
+   * The same post, inside a transaction the caller already owns.
+   *
+   * `ContactReplyService` needs it: a customer's reply may reopen a Ticket or
+   * spawn a linked one, and the Message is part of that same act. A spawned
+   * Ticket that committed without its first Message would be a thread born
+   * empty with a first-response clock measuring from nothing.
+   *
+   * It exists here rather than as a `tx.message.create` at the call site so that
+   * this class keeps its defining property: every query that names `message`
+   * names it in this file. A reply path reaching for the table directly would be
+   * the first crack in "no code path can return a Note through the
+   * customer-visible thread read", because it would be a second place that
+   * decides which table a thread lives in.
+   */
+  async postIn(
+    tx: TenantClient,
+    principal: RequestPrincipal,
+    ticketId: string,
+    body: string,
+  ): Promise<Message> {
+    await assertTicketVisible(tx, ticketId);
+
+    return tx.message
+      .create({ data: { tenantId: principal.tenantId, ticketId, body } })
+      .catch(rethrowMissingTicket);
   }
 
   /** A page of one Ticket's Messages — and only Messages. */

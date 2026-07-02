@@ -308,6 +308,26 @@ model Ticket {
   priority TicketPriority @default(normal)
   source   TicketSource
 
+  /// The closed Ticket whose reply produced this one, and null on an origin
+  /// Ticket. Exact ancestry: it names the direct parent, not the chain.
+  ///
+  /// Set at INSERT and immutable thereafter, enforced by a trigger rather than
+  /// by the absence of an update path — "nothing writes this" is a claim about
+  /// one port, and the append-only spirit here is the same one `AuditLog` has.
+  spawnedFromTicketId String? @map("spawned_from_ticket_id") @db.Uuid
+
+  /// The conversation's origin, denormalized, and null on an origin Ticket —
+  /// "I am the root", stated by convention. Derived by the database from the
+  /// parent (`parent.rootTicketId ?? parent.id`) and never supplied by a
+  /// caller, so it cannot disagree with the ancestry it summarizes.
+  ///
+  /// A stored fact that is otherwise derivable, and the one thing it buys is
+  /// the whole reason it exists: a conversation is a flat indexed lookup rather
+  /// than a `WITH RECURSIVE`. That is *more* portable, not less — a recursive
+  /// CTE is exactly the database-specific cleverness the three ports would each
+  /// have to reimplement.
+  rootTicketId String? @map("root_ticket_id") @db.Uuid
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -329,6 +349,23 @@ model Ticket {
   /// API deletes a User anyway; staff are deactivated, which leaves both the
   /// assignment and the history intact.
   assignee User? @relation("TicketAssignee", fields: [tenantId, assigneeId], references: [tenantId, id], onDelete: Restrict)
+
+  /// The two linkage pointers, composite per ADR-0002 like every other
+  /// tenant-scoped reference — and it earns its keep here, since a plain
+  /// `id` reference would be satisfied by another tenant's Ticket and would
+  /// turn the chain read into a cross-tenant join.
+  ///
+  /// `Cascade` rather than `SetNull`, which a composite reference cannot express
+  /// anyway (it would have to null `tenantId`, which is `NOT NULL` — the same
+  /// forced choice `assignee` records in reverse). It is also the honest rule: a
+  /// spawned Ticket whose parent was hard-deleted would point at nothing, and
+  /// `ticket:delete` is already understood to take the conversation with it.
+  spawnedFrom  Ticket?  @relation("TicketSpawn", fields: [tenantId, spawnedFromTicketId], references: [tenantId, id], onDelete: Cascade)
+  spawned      Ticket[] @relation("TicketSpawn")
+  root         Ticket?  @relation("TicketChain", fields: [tenantId, rootTicketId], references: [tenantId, id], onDelete: Cascade)
+  /// Every descendant in the chain, in one hop. This is the relation the
+  /// conversation read exists for — no recursion, one index.
+  chain        Ticket[] @relation("TicketChain")
 
   /// The control-plane record for this Ticket. Not a cascade: entries outlive
   /// the Ticket they describe — see `AuditLog.ticket`.
@@ -355,6 +392,15 @@ model Ticket {
   @@index([tenantId, state, createdAt(sort: Desc)])
   @@index([tenantId, assigneeId, createdAt(sort: Desc)])
   @@index([tenantId, contactId])
+  // The conversation read: a chain's descendants by this index, its origin by
+  // primary key. Ordered by `createdAt` because that is the order the
+  // conversation happened in, which is the only order it reads as a narrative.
+  @@index([tenantId, rootTicketId, createdAt])
+  // Not expressible here, and stated in the migration instead: a unique partial
+  // index on `(tenantId, COALESCE(rootTicketId, id)) WHERE state <> 'closed'`,
+  // which is the re-reply invariant — at most one live Ticket per chain, so a
+  // burst of replies cannot fan out into duplicates. Prisma manages neither
+  // expression indexes nor the `ticket_linkage_is_whole` check beside it.
   @@map("ticket")
 }
 
