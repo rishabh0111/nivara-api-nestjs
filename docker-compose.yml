@@ -72,6 +72,10 @@ services:
       # Throwaway, like every other value in this file. A deployed environment
       # injects a real one; this exists so a clean clone boots with no secrets.
       JWT_SECRET: local_dev_only_jwt_secret_not_for_real_use
+      # A second throwaway, and deliberately not the same string as the one
+      # above: widget sessions are signed by their own key so a token minted for
+      # one surface cannot verify on the other.
+      WIDGET_SESSION_SECRET: local_dev_only_widget_secret_not_for_real_use
     depends_on:
       postgres:
         condition: service_healthy

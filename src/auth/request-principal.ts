@@ -1,5 +1,9 @@
 import { UserRole } from '../generated/prisma/client';
-import { Actor, TenantContext } from '../tenancy/tenant-context';
+import {
+  Actor,
+  InvalidTenantContextError,
+  TenantContext,
+} from '../tenancy/tenant-context';
 
 /**
  * Who is making this request, as resolved from a validated credential.
@@ -15,7 +19,8 @@ import { Actor, TenantContext } from '../tenancy/tenant-context';
  * security, so a caller able to influence it could select which tenant it acts
  * as.
  */
-export type RequestPrincipal = StaffPrincipal | ContactPrincipal;
+export type RequestPrincipal =
+  StaffPrincipal | ContactPrincipal | WidgetPrincipal;
 
 /** Internal staff, carrying the role their authority is derived from. */
 export interface StaffPrincipal {
@@ -42,6 +47,35 @@ export interface ContactPrincipal {
 }
 
 /**
+ * An anonymous visitor on the tenant's own site, holding a widget session.
+ *
+ * The third arm, and the only one whose subject may not exist yet. A Contact is
+ * resolved when one is actually *needed* — opening a Ticket needs a requester,
+ * reading a list of Tickets does not — so `contactId` is null for a visitor who
+ * has opened the widget and not yet said anything.
+ *
+ * That nullability is confined here on purpose. Nothing downstream branches on
+ * it, because nothing downstream ever sees this principal: the widget surface
+ * exchanges it for a `ContactPrincipal` through `WidgetSessionService` before it
+ * touches a Ticket or a Message, and from that point the request is
+ * indistinguishable from a portal request. So the widget adds a credential type
+ * and a surface, and adds no second implementation of anything — which is why a
+ * widget visitor is narrowed by exactly the row-level security policies the
+ * portal is, rather than by a parallel set somebody has to keep in step.
+ *
+ * `sessionId` is carried rather than discarded because it is what renewal
+ * extends and what revocation kills — the row is the mutable half of the
+ * session, and this is the handle on it.
+ */
+export interface WidgetPrincipal {
+  kind: 'widget';
+  tenantId: string;
+  sessionId: string;
+  /** Null until an act requires a requester. See `WidgetSessionService`. */
+  contactId: string | null;
+}
+
+/**
  * The bridge from a credential to a database context.
  *
  * This is the only sanctioned way to obtain a `TenantContext` for a request,
@@ -64,11 +98,40 @@ export const tenantContextFor = (
   actor: actorFor(principal),
 });
 
-/** The principal's discriminant, as the actor the audit trail records. */
-const actorFor = (principal: RequestPrincipal): Actor =>
-  principal.kind === 'user'
-    ? { kind: 'user', id: principal.userId }
-    : { kind: 'contact', id: principal.contactId };
+/**
+ * The principal's discriminant, as the actor the audit trail records.
+ *
+ * A widget session arms `contact`, not an actor kind of its own, and that is
+ * the single decision the whole widget surface rests on. There is no `widget`
+ * actor kind: a widget visitor *is* a Contact — one who has not said who they
+ * are — so every policy already written on the contact axis narrows them
+ * identically, and every audit row already attributes them correctly. A fourth
+ * actor kind would have meant revisiting each of those policies to decide what
+ * it means there, and the honest answer at each would have been "the same as a
+ * contact".
+ *
+ * A widget principal with no Contact yet has no actor to name, and that is a
+ * programming error rather than a state to handle: the surface exchanges such a
+ * principal for a `ContactPrincipal` before reaching the database. Throwing
+ * `InvalidTenantContextError` is the same treatment every other unarmable
+ * context gets — a 500 naming the missing step, rather than a silently
+ * mis-attributed write.
+ */
+const actorFor = (principal: RequestPrincipal): Actor => {
+  if (principal.kind === 'user') return { kind: 'user', id: principal.userId };
+
+  if (principal.kind === 'contact') {
+    return { kind: 'contact', id: principal.contactId };
+  }
+
+  if (!principal.contactId) {
+    throw new InvalidTenantContextError(
+      `widget session ${principal.sessionId} has not resolved a Contact — call WidgetSessionService.contactPrincipalFor() before reaching the database`,
+    );
+  }
+
+  return { kind: 'contact', id: principal.contactId };
+};
 
 /**
  * The context for work done *before* anyone is identified.

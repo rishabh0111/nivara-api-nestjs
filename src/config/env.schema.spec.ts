@@ -1,14 +1,16 @@
 import { validateEnv } from './env.schema';
 
 /**
- * The two things the application cannot invent: somewhere to store data, and a
- * key to sign sessions with. Every case below starts from them. This is still
- * the key-free path — compose supplies both itself, as throwaway local
- * defaults, and the developer supplies no credentials of any kind.
+ * The things the application cannot invent: somewhere to store data, and the
+ * keys to sign its two kinds of session with. Every case below starts from
+ * them. This is still the key-free path — compose supplies all three itself, as
+ * throwaway local defaults, and the developer supplies no credentials of any
+ * kind.
  */
 const MINIMUM = {
   DATABASE_URL: 'postgres://app_user:pw@localhost:5432/nivara',
   JWT_SECRET: 'a-test-secret-of-at-least-thirty-two-characters',
+  WIDGET_SESSION_SECRET: 'a-widget-secret-of-at-least-thirty-two-chars',
 };
 
 const validate = (overrides: Record<string, unknown> = {}) =>
@@ -43,6 +45,29 @@ describe('validateEnv', () => {
      */
     it('refuses one too short to be worth signing with', () => {
       expect(() => validate({ JWT_SECRET: 'short' })).toThrow(/JWT_SECRET/);
+    });
+  });
+
+  /**
+   * A second required key on the same terms as the first, and required rather
+   * than optional because the widget surface is not an optional integration:
+   * it has no external service to be dormant without, so an absent key would
+   * mean a route that exists and cannot work.
+   */
+  describe('the widget-session secret', () => {
+    it('refuses to boot without one', () => {
+      expect(() =>
+        validateEnv({
+          DATABASE_URL: MINIMUM.DATABASE_URL,
+          JWT_SECRET: MINIMUM.JWT_SECRET,
+        }),
+      ).toThrow(/WIDGET_SESSION_SECRET/);
+    });
+
+    it('refuses one too short to be worth signing with', () => {
+      expect(() => validate({ WIDGET_SESSION_SECRET: 'short' })).toThrow(
+        /WIDGET_SESSION_SECRET/,
+      );
     });
   });
 

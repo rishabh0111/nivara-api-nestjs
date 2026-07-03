@@ -6,16 +6,24 @@ import { AccessTokenService } from './access-token.service';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import {
-  RequestPrincipal,
   StaffPrincipal,
   systemContextFor,
   tenantContextFor,
 } from './request-principal';
 import { rotateRefreshSession } from './session-rotation';
 
-/** What a sign-in or a refresh produces: one of each half of a session. */
+/**
+ * What a staff sign-in or refresh produces.
+ *
+ * `principal` is a `StaffPrincipal` rather than the full union, because this
+ * service resolves the `user` table and can produce nothing else. It was the
+ * union while there was only one arm and the distinction cost nothing; with
+ * three arms it costs the ability to state what this service actually returns —
+ * and it would let a widget session, which this service cannot mint a token
+ * for, typecheck its way into `issueSession`.
+ */
 export interface Session {
-  principal: RequestPrincipal;
+  principal: StaffPrincipal;
   accessToken: string;
   refreshToken: string;
 }
@@ -80,7 +88,7 @@ export class AuthService {
 
         if (!user || !valid) return null;
 
-        const principal: RequestPrincipal = {
+        const principal: StaffPrincipal = {
           kind: 'user',
           tenantId: input.tenantId,
           userId: user.id,
@@ -119,7 +127,7 @@ export class AuthService {
     const session = await this.tenancy.withTenant(
       systemContextFor(input.tenantId),
       (tx) =>
-        rotateRefreshSession<RequestPrincipal>({
+        rotateRefreshSession<StaffPrincipal>({
           refreshTokens: this.refreshTokens,
           tx,
           token: input.token,
@@ -203,7 +211,7 @@ export class AuthService {
 
   /** Mints the access token for a session, or refuses if there is none. */
   private async issueSession(
-    session: { principal: RequestPrincipal; refreshToken: string } | null,
+    session: { principal: StaffPrincipal; refreshToken: string } | null,
   ): Promise<Session> {
     if (!session) throw refuse();
 

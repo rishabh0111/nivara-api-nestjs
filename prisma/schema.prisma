@@ -18,22 +18,94 @@ datasource db {
 }
 
 model Tenant {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  slug      String   @unique
-  name      String
+  id   String @id @default(uuid(7)) @db.Uuid
+  slug String @unique
+  name String
+
+  /// The origins this Tenant's chat widget may be bootstrapped from.
+  ///
+  /// Empty by default, which means the widget is off: a Tenant that has not
+  /// named an origin cannot mint a session at all. That is the right default
+  /// for a public, unauthenticated endpoint — enabling the widget is a
+  /// deliberate act, and a Tenant nobody configured is not quietly serving
+  /// sessions to any page that asks.
+  ///
+  /// Serialized origins (`https://host[:port]`) rather than hostnames, because
+  /// that is exactly what a browser puts in the `Origin` header and comparing
+  /// anything else would mean parsing it back apart. See `origin-allowlist.ts`
+  /// for the matching rule, which is deliberately exact — no wildcards, no
+  /// subdomain suffixes.
+  widgetOrigins String[] @map("widget_origins")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  users         User[]
-  contacts      Contact[]
-  refreshTokens RefreshToken[]
-  invitations   StaffInvitation[]
-  tickets       Ticket[]
-  auditLog      AuditLog[]
-  messages      Message[]
-  notes         Note[]
+  users          User[]
+  contacts       Contact[]
+  refreshTokens  RefreshToken[]
+  invitations    StaffInvitation[]
+  tickets        Ticket[]
+  auditLog       AuditLog[]
+  messages       Message[]
+  notes          Note[]
+  widgetSessions WidgetSession[]
 
   @@map("tenant")
+}
+
+/// An anonymous visitor's handle on a Tenant's own site.
+///
+/// The row exists for one reason the signed token could not serve: revocation.
+/// A bearer token is valid until it expires, and "kill this one abusive visitor"
+/// has no answer that does not also sign out every other visitor — rotating the
+/// signing secret invalidates every session at once. A row per session makes the
+/// answer a single UPDATE.
+///
+/// It carries the *mutable* half of a session, and the token carries only the
+/// immutable half (`sessionId`, `tenantId`). That split is why a Contact
+/// resolved in the middle of a conversation is picked up on the very next
+/// request without re-minting anything, and why a token held by someone else
+/// cannot assert a Contact the server did not put here.
+///
+/// Note what is absent: nothing identifying the visitor. No IP, no user agent,
+/// no fingerprint. "Nothing durable is stored before they identify themselves"
+/// is a claim about this table's columns, not a policy applied to it.
+model WidgetSession {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The Contact this session speaks as, and null until one is *needed*.
+  ///
+  /// Deliberately not populated at mint. A visitor who opens the widget and
+  /// reads nothing leaves no Contact behind; the row is created by the first act
+  /// that requires a requester — opening a Ticket. This nullable column is the
+  /// whole "anonymous until it matters" property, and it is also the seam a
+  /// later identity-merge lands on: promoting this session's Contact into a
+  /// known person changes what this column points at and nothing else.
+  contactId String? @map("contact_id") @db.Uuid
+
+  /// The 30-minute window, extended by renewal rather than replaced by a new
+  /// session — so a long conversation keeps one session id and one Contact.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  /// Set to kill this session and no other. The whole reason the row exists.
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Composite per ADR-0002, as every tenant-scoped reference is. Optional
+  /// through its id half while `tenantId` stays required, exactly as
+  /// `RefreshToken.contact` is.
+  contact Contact? @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade)
+
+  // The only read this table has: one session by id, on every widget request.
+  // The primary key serves it; this index serves the sweep that will eventually
+  // reap expired rows, which is a tenant-scoped scan by expiry.
+  @@index([tenantId, expiresAt])
+  @@map("widget_session")
 }
 
 /// A User's authority within their Tenant. There are exactly two.
@@ -221,9 +293,14 @@ model Contact {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tickets       Ticket[]
-  refreshTokens RefreshToken[]
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tickets        Ticket[]
+  refreshTokens  RefreshToken[]
+  /// The widget sessions that resolved to this Contact. Plural because one
+  /// person can open the widget twice; merging those into one identity is
+  /// deliberately not solved here, so today each session points at a Contact of
+  /// its own.
+  widgetSessions WidgetSession[]
 
   // No inverse for authored Messages. A Message's author is polymorphic —
   // `authorKind`/`authorId`, which can name a Contact, a User or a service

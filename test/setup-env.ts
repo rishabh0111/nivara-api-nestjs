@@ -33,3 +33,15 @@ process.env['DATABASE_URL'] ??= UNREACHABLE_DATABASE_URL;
  * only job is to clear the length floor.
  */
 process.env['JWT_SECRET'] ??= 'test-only-jwt-secret-at-least-32-chars-long';
+
+/**
+ * `WIDGET_SESSION_SECRET` became required with the widget surface, on exactly
+ * the same terms.
+ *
+ * A different value from `JWT_SECRET` above, and that is not decoration: the
+ * widget suite asserts that a staff token does not verify as a widget session
+ * and vice versa, and if these two lines held the same string that test would
+ * pass for the wrong reason — or rather, would fail to be a test at all.
+ */
+process.env['WIDGET_SESSION_SECRET'] ??=
+  'test-only-widget-secret-at-least-32-chars-long';

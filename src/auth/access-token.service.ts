@@ -2,7 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { AppConfigService } from '../config/app-config.service';
 import { UserRole } from '../generated/prisma/client';
-import { RequestPrincipal } from './request-principal';
+import {
+  ContactPrincipal,
+  RequestPrincipal,
+  StaffPrincipal,
+} from './request-principal';
 
 /** Fifteen minutes. Short enough that revocation can be left to expiry. */
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
@@ -56,7 +60,17 @@ export class AccessTokenService {
     private readonly config: AppConfigService,
   ) {}
 
-  async sign(principal: RequestPrincipal): Promise<string> {
+  /**
+   * Mints an access token for the two principals this service is the issuer of.
+   *
+   * Narrowed to those two rather than taking a `RequestPrincipal`, because a
+   * widget session is not an access token: it is signed by a different key, has
+   * a different lifetime, and is backed by a row that can revoke it. Handing one
+   * to this method would mint a *staff-key* credential for an anonymous visitor
+   * — the exact confusion the second key exists to prevent — so the type refuses
+   * it at the call site rather than a runtime branch refusing it later.
+   */
+  async sign(principal: StaffPrincipal | ContactPrincipal): Promise<string> {
     const claims: AccessTokenClaims =
       principal.kind === 'user'
         ? {
@@ -131,9 +145,13 @@ const isNonEmptyString = (value: unknown): value is string =>
  *
  * An unrecognized or absent `kind` is refused rather than defaulted. Defaulting
  * to `user` would promote every claim-less token to staff; defaulting to
- * `contact` would still let a token's shape decide who its bearer is. `service`
- * is refused here today and becomes a third arm in ticket 12 — until it does, a
- * token naming it is one this server did not issue.
+ * `contact` would still let a token's shape decide who its bearer is.
+ *
+ * `widget` is refused here and always will be, which is a different case from
+ * the two below it: widget sessions are a real principal kind, but they are
+ * signed by a different key and verified by `WidgetSessionService`, so a token
+ * claiming `widget` on *this* key is one this server did not issue. `service`
+ * is refused for the ordinary reason and becomes a third arm in ticket 12.
  */
 export const principalFromClaims = (
   claims: unknown,

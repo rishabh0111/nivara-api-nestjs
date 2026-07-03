@@ -41,6 +41,18 @@ export class AppConfigService {
     return this.get('JWT_SECRET');
   }
 
+  /**
+   * Signs and verifies widget session tokens.
+   *
+   * Deliberately not `jwtSecret`. A widget session and a staff access token are
+   * signed by different keys so that a token minted for one surface fails to
+   * verify on the other at the signature, before any claim is inspected — see
+   * the schema comment for why that is worth a second key.
+   */
+  get widgetSessionSecret(): string {
+    return this.get('WIDGET_SESSION_SECRET');
+  }
+
   get isProduction(): boolean {
     return this.nodeEnv === 'production';
   }

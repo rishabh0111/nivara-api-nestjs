@@ -35,6 +35,11 @@ const SEED = {
   meridian: {
     slug: 'meridian',
     name: 'Meridian',
+    // The widget is on for this tenant, so the demo path can exercise it
+    // without configuring anything. Two entries because the widget will be
+    // embedded on the marketing site and driven from the local dev server, and
+    // matching is exact — no wildcards, no subdomain suffixes.
+    widgetOrigins: ['https://meridian.example', 'http://localhost:3000'],
     users: [
       { email: 'admin@meridian.test', name: 'Ada Okonjo', role: 'admin' },
       { email: 'agent@meridian.test', name: 'Ravi Menon', role: 'agent' },
@@ -52,6 +57,11 @@ const SEED = {
   sortwood: {
     slug: 'sortwood',
     name: 'Sortwood',
+    // A *different* origin from Meridian's, which is what makes the allowlist
+    // demonstrable rather than merely present: a page allowed to bootstrap one
+    // tenant's widget is refused by the other, and the isolation tenant proves
+    // it the same way it proves every other cross-tenant claim.
+    widgetOrigins: ['https://sortwood.example'],
     users: [
       { email: 'admin@sortwood.test', name: 'Petra Lindqvist', role: 'admin' },
       // The other half of the shared-address pair. `admin` here, `agent` at
@@ -78,8 +88,12 @@ const seedTenant = async (
   // unique-constraint failure — compose runs it on every `up`.
   const tenant = await prisma.tenant.upsert({
     where: { slug: spec.slug },
-    update: { name: spec.name },
-    create: { slug: spec.slug, name: spec.name },
+    update: { name: spec.name, widgetOrigins: [...spec.widgetOrigins] },
+    create: {
+      slug: spec.slug,
+      name: spec.name,
+      widgetOrigins: [...spec.widgetOrigins],
+    },
   });
 
   // Hashed per tenant rather than once for the whole seed: argon2 salts each

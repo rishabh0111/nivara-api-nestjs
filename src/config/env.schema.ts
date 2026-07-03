@@ -57,9 +57,23 @@ export const envSchema = z
     // value, exactly as it does for DATABASE_URL.
     JWT_SECRET: z.string().trim().min(32),
 
-    // A secret for a surface not yet built. Same reasoning as the optional
-    // integrations — the ticket that introduces it tightens it to required.
-    WIDGET_SESSION_SECRET: optionalString,
+    // Signs anonymous widget sessions, and required as of the widget surface —
+    // the tightening the placeholder above this line promised.
+    //
+    // A *separate* secret from JWT_SECRET rather than a second audience on the
+    // same key, and the separation is load-bearing rather than tidy. One key
+    // signing both would mean a staff token and a widget session differ only by
+    // their claims, so the whole distinction between "an agent" and "an
+    // anonymous visitor" would rest on the claim-shape check in one function.
+    // With two keys, a token minted for one surface does not verify on the
+    // other at all: the refusal happens at the signature, before any claim is
+    // read, and it holds even if that function is one day got wrong.
+    //
+    // Floored at 32 bytes for the reason JWT_SECRET is — HS256 takes a key of
+    // any length, so a short one is not an error anywhere, just a forgeable
+    // session. The key-free first run survives it because compose bakes in a
+    // throwaway value, exactly as it does for the other two required keys.
+    WIDGET_SESSION_SECRET: z.string().trim().min(32),
 
     // Optional integration: Google OIDC staff login.
     GOOGLE_CLIENT_ID: optionalString,

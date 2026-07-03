@@ -14,6 +14,17 @@ export interface Page<T> {
 }
 
 /**
+ * A page with nothing on it, for a caller that knows the answer without asking.
+ *
+ * For the case where a handler can establish from the principal alone that the
+ * result set is empty, and where issuing the query would therefore be not merely
+ * wasteful but wrong — because the query itself has a side effect, or because
+ * asking would require materializing state the caller has not earned.
+ * `nextCursor` is null because there is no traversal to continue.
+ */
+export const emptyPage = <T>(): Page<T> => ({ data: [], nextCursor: null });
+
+/**
  * Turns a fetched row set into a page.
  *
  * Callers query `limit + 1` rows. The extra row is the has-more probe: it never

@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { PermissionGuard } from '../authz/permission.guard';
+import { WidgetSessionModule } from '../widget/widget-session.module';
 
 /**
  * Authentication, and the guard that closes the application by default.
@@ -24,7 +25,11 @@ import { PermissionGuard } from '../authz/permission.guard';
  * verifier would be a second place for the claim checks to drift.
  */
 @Module({
-  imports: [JwtModule.register({})],
+  // `WidgetSessionModule` is the guard's second verifier, and is deliberately
+  // the *session* module rather than the whole `WidgetModule`: importing the
+  // surface would drag the ticket and conversation stack in behind it, for a
+  // dependency that is only ever "turn this bearer value into a principal".
+  imports: [JwtModule.register({}), WidgetSessionModule],
   controllers: [AuthController],
   providers: [
     AuthService,

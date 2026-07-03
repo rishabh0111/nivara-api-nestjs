@@ -7,6 +7,8 @@ import {
 import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { AppException } from '../common/errors/app-exception';
+import { isWidgetToken } from '../widget/widget-session-token';
+import { WidgetSessionService } from '../widget/widget-session.service';
 import { AccessTokenService } from './access-token.service';
 import { RequestPrincipal } from './request-principal';
 
@@ -43,16 +45,23 @@ export interface AuthenticatedRequest extends Request {
  * principal may do, which is the authorization guard's job, and it does not
  * open a transaction, which is the handler's.
  *
- * Today there is exactly one credential type. Service tokens add a branch
- * *here*, distinguished by the bearer value's prefix, and converge on the same
- * `RequestPrincipal` — so everything downstream of this file stays unaware
- * that a second kind of caller exists.
+ * Two credential types today, told apart by the bearer value's prefix and
+ * converging on the same `RequestPrincipal` — so everything downstream of this
+ * file stays unaware that more than one kind of caller exists. Service tokens
+ * add a third branch on the same terms, under `nvk_live_`.
+ *
+ * The prefix is routing, not authentication. It decides which verifier gets the
+ * value so that one credential type is not tried against every key in the
+ * process; it grants nothing, and a staff token wearing a widget prefix fails
+ * at the signature a moment later because the two surfaces are signed by
+ * different keys.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly accessTokens: AccessTokenService,
+    private readonly widgetSessions: WidgetSessionService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -68,7 +77,9 @@ export class AuthGuard implements CanActivate {
 
     if (!token) throw unauthenticated();
 
-    const principal = await this.accessTokens.verify(token);
+    const principal = isWidgetToken(token)
+      ? await this.widgetSessions.verify(token)
+      : await this.accessTokens.verify(token);
 
     if (!principal) throw unauthenticated();
 
