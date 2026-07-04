@@ -61,8 +61,13 @@ export const PERMISSIONS = Object.keys(PERMISSION_CATALOG) as Permission[];
  * permission added to support work would have to be remembered in two places,
  * and the day it is not, admins quietly lose the ability to do the job they
  * supervise.
+ *
+ * Exported for `service-scopes.ts`, which draws the assignable scope list from
+ * it on the same argument: a service token does an agent's job, so the bound on
+ * a machine credential is "no more than an agent" and should be that list
+ * rather than a copy of it.
  */
-const SUPPORT_WORK = [
+export const SUPPORT_WORK = [
   'ticket:read',
   'ticket:create',
   'ticket:reply',
@@ -102,9 +107,9 @@ export const ROLE_PERMISSIONS = {
 /**
  * What a principal may do.
  *
- * The one place authority is derived, and the seam service tokens arrive
- * through: a token principal will answer from the permission set on its own
- * row rather than through a role, and the guard above will not notice the
+ * The one place authority is derived, and the seam service tokens arrived
+ * through: a token principal answers from the permission set on its own row
+ * rather than through a role, and the guard above does not notice the
  * difference. Keeping the branch here rather than in the guard is what makes
  * "one authorization path" true rather than aspirational.
  *
@@ -120,6 +125,13 @@ export const ROLE_PERMISSIONS = {
 export const permissionsFor = (
   principal: RequestPrincipal,
 ): ReadonlySet<Permission> => {
+  // Straight off the principal, which `ServiceTokenService` resolved from the
+  // row and narrowed through `grantedScopes()` — so the un-grantable set has
+  // already been subtracted twice by the time it arrives here, once at mint and
+  // once on read. No role indirection, because a token's grants are chosen one
+  // integration at a time rather than shared by a class of people.
+  if (principal.kind === 'service') return new Set(principal.scopes);
+
   if (principal.kind !== 'user') return EMPTY;
 
   // `?? []` rather than an index that trusts the map to be total. A role the

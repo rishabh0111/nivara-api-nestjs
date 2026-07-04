@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { PermissionGuard } from '../authz/permission.guard';
+import { ServiceTokenModule } from '../service-tokens/service-token.module';
 import { WidgetSessionModule } from '../widget/widget-session.module';
 
 /**
@@ -29,7 +30,11 @@ import { WidgetSessionModule } from '../widget/widget-session.module';
   // the *session* module rather than the whole `WidgetModule`: importing the
   // surface would drag the ticket and conversation stack in behind it, for a
   // dependency that is only ever "turn this bearer value into a principal".
-  imports: [JwtModule.register({}), WidgetSessionModule],
+  //
+  // `ServiceTokenModule` is the third, on identical terms — the leaf that turns
+  // a `nvk_live_` value into a principal, not the controller module that serves
+  // the admin surface.
+  imports: [JwtModule.register({}), WidgetSessionModule, ServiceTokenModule],
   controllers: [AuthController],
   providers: [
     AuthService,

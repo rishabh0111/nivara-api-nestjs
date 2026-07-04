@@ -1,3 +1,8 @@
+// `import type`, because `permissions.ts` imports this module back for the
+// principal union. The cycle is real but purely at the type level, and this
+// keeps it erased rather than leaving a runtime edge for the module loader to
+// resolve in whichever order it happens to reach the two files.
+import type { Permission } from '../authz/permissions';
 import { UserRole } from '../generated/prisma/client';
 import {
   Actor,
@@ -12,7 +17,8 @@ import {
  * tenant arming, authorization, attribution — was written against this shape
  * rather than against "the logged-in user", which is why a second principal
  * kind arrives without a second authorization path to drift out of sync with
- * the first. Service tokens add a third `kind` on the same terms.
+ * the first. Service tokens arrived on exactly those terms as the fourth arm
+ * below, adding a credential type and no second authorization path.
  *
  * Every field here is server-determined. There is no constructor that reads a
  * request body, and there must never be one: `tenantId` is what arms row-level
@@ -20,7 +26,7 @@ import {
  * as.
  */
 export type RequestPrincipal =
-  StaffPrincipal | ContactPrincipal | WidgetPrincipal;
+  StaffPrincipal | ContactPrincipal | WidgetPrincipal | ServicePrincipal;
 
 /** Internal staff, carrying the role their authority is derived from. */
 export interface StaffPrincipal {
@@ -76,6 +82,40 @@ export interface WidgetPrincipal {
 }
 
 /**
+ * Software acting within a tenant under an admin's explicit authority.
+ *
+ * The only arm carrying its authority *in* the principal rather than deriving
+ * it from a role, and that asymmetry is deliberate: a role is a name for a set
+ * of grants shared by many people, whereas a service token's grants are chosen
+ * one integration at a time. `permissionsFor()` reads this field where it reads
+ * `ROLE_PERMISSIONS` for staff, and the guard above cannot tell the difference —
+ * which is what makes "one authorization path" true rather than aspirational.
+ *
+ * Resolved fresh from the row on every request, never from the token. That is
+ * the whole reason this credential is not a JWT: scopes an admin widened a
+ * moment ago apply now, and a revoked token stops working on its very next
+ * request rather than whenever a signed copy of the truth expires.
+ *
+ * An agent-equivalent principal, and therefore exempt from the Contact axis: it
+ * arms the `service` actor kind, so the `NOT current_actor_is_contact()` clause
+ * in every contact-axis policy passes it through exactly as it does staff. No
+ * policy needed a `service` case written into it, which is the same dividend
+ * the widget's decision to arm `contact` paid.
+ */
+export interface ServicePrincipal {
+  kind: 'service';
+  tenantId: string;
+  /** The `service_token` row this credential names — the audit trail's actor. */
+  tokenId: string;
+  /**
+   * What this token may do, already narrowed by `grantedScopes()`. Carried as
+   * `Permission[]` rather than `string[]` so the un-grantable set cannot be
+   * smuggled in by a row somebody wrote outside the mint path.
+   */
+  scopes: readonly Permission[];
+}
+
+/**
  * The bridge from a credential to a database context.
  *
  * This is the only sanctioned way to obtain a `TenantContext` for a request,
@@ -122,6 +162,17 @@ const actorFor = (principal: RequestPrincipal): Actor => {
 
   if (principal.kind === 'contact') {
     return { kind: 'contact', id: principal.contactId };
+  }
+
+  // A `service` actor kind of its own, unlike the widget's decision to arm
+  // `contact`. The two cases look alike and are not: a widget visitor *is* a
+  // Contact who has not said who they are, so every contact-axis policy already
+  // meant the right thing for them. A machine caller is not a User — it is a
+  // fourth thing that acts — and the whole point of attributing it separately is
+  // that AI contribution is measurable. Arming `user` would have made deflection
+  // unanswerable by hiding every machine Message among the human ones.
+  if (principal.kind === 'service') {
+    return { kind: 'service', id: principal.tokenId };
   }
 
   if (!principal.contactId) {

@@ -49,6 +49,7 @@ model Tenant {
   messages       Message[]
   notes          Note[]
   widgetSessions WidgetSession[]
+  serviceTokens  ServiceToken[]
 
   @@map("tenant")
 }
@@ -108,6 +109,73 @@ model WidgetSession {
   @@map("widget_session")
 }
 
+/// A tenant-scoped machine credential — the AI layer's authority, made explicit.
+///
+/// The row *is* the credential's authority, and that is the one design decision
+/// everything else here follows from. The other two credentials in this API are
+/// signed claim sets; this one is an opaque lookup key, because everything that
+/// would have been a claim is mutable. Scopes an admin widens apply on the next
+/// request, and revocation takes effect on the next request, because there is no
+/// signed copy of the truth in the caller's hands to outlive this row. A TTL
+/// would have been a revocation delay, and revocation delay is the thing a
+/// machine credential can least afford.
+///
+/// Stored as `sha256(token)`, like a refresh token and an invitation: reading
+/// this table must not yield a usable credential. The raw value is returned once
+/// at mint and is genuinely unrecoverable afterwards — a lost token is reminted,
+/// never looked up.
+///
+/// `scopes` is text rather than an enum, and the type is the honest one: the
+/// authority vocabulary is `PERMISSION_CATALOG` in the application, shared with
+/// staff roles, and a Postgres enum mirroring it would be a second catalog to
+/// keep in step across three language ports. What guards the column is
+/// `classifyScopes()` at mint and `grantedScopes()` on every read — the latter
+/// re-subtracting the un-grantable set, so a row written outside the mint path
+/// still cannot confer `audit:read`.
+model ServiceToken {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// What this credential is for, in an operator's words. The only reason to
+  /// list tokens is to decide which one to revoke, and a page of uuids cannot
+  /// answer that.
+  name String
+
+  /// `sha256(raw)`, hex. Unique globally rather than per tenant: verification
+  /// looks a presented token up by hash within the tenant its own routing
+  /// segment names, and a global unique index means two tenants cannot hold
+  /// rows that a single presented value would match.
+  tokenHash String @unique @map("token_hash")
+
+  /// Permissions from the staff catalog — never a parallel namespace. See
+  /// `service-scopes.ts` for which of them may be granted here and why.
+  scopes String[]
+
+  /// Who minted it. Stamped from the minting admin's credential, never from
+  /// request input, so provenance cannot be forged. Not nullable: a machine
+  /// credential nobody is accountable for is not a state this table admits.
+  createdById String @map("created_by_id") @db.Uuid
+
+  /// Set once and never cleared. Revocation is terminal — a token that could be
+  /// un-revoked would make "revoked" a state to re-check rather than a fact, and
+  /// reinstating access should cost a new secret.
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Composite per ADR-0002. `Restrict`, unlike most references here: the
+  /// minting admin is the provenance record, so deactivating them must not
+  /// silently erase who authorized a live machine credential.
+  createdBy User @relation("MintingUser", fields: [tenantId, createdById], references: [tenantId, id], onDelete: Restrict, onUpdate: Cascade)
+
+  // The list read: one tenant's tokens, newest first.
+  @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("service_token")
+}
+
 /// A User's authority within their Tenant. There are exactly two.
 enum UserRole {
   agent
@@ -142,6 +210,9 @@ model User {
   /// Invitations this User issued. Admin-only in practice, but the schema does
   /// not encode that — authority is the guard's business, not the FK's.
   invitationsSent StaffInvitation[] @relation("InvitingUser")
+  /// ServiceTokens this User minted. The provenance answer to "who gave the AI
+  /// layer this authority", which is why the column is not nullable.
+  tokensMinted    ServiceToken[]    @relation("MintingUser")
 
   // The login lookup key. Uniqueness is per tenant, never global.
   @@unique([tenantId, email])

@@ -7,6 +7,8 @@ import {
 import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { AppException } from '../common/errors/app-exception';
+import { isServiceToken } from '../service-tokens/service-token-format';
+import { ServiceTokenService } from '../service-tokens/service-token.service';
 import { isWidgetToken } from '../widget/widget-session-token';
 import { WidgetSessionService } from '../widget/widget-session.service';
 import { AccessTokenService } from './access-token.service';
@@ -45,10 +47,12 @@ export interface AuthenticatedRequest extends Request {
  * principal may do, which is the authorization guard's job, and it does not
  * open a transaction, which is the handler's.
  *
- * Two credential types today, told apart by the bearer value's prefix and
+ * Three credential types, told apart by the bearer value's prefix and
  * converging on the same `RequestPrincipal` — so everything downstream of this
- * file stays unaware that more than one kind of caller exists. Service tokens
- * add a third branch on the same terms, under `nvk_live_`.
+ * file stays unaware that more than one kind of caller exists. This is the only
+ * thing in the request path that branches on credential type: `withTenant()`
+ * and the permission guard are shared and cannot tell which principal they are
+ * serving, which is what stops the kinds drifting apart in what they may do.
  *
  * The prefix is routing, not authentication. It decides which verifier gets the
  * value so that one credential type is not tried against every key in the
@@ -62,6 +66,7 @@ export class AuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly accessTokens: AccessTokenService,
     private readonly widgetSessions: WidgetSessionService,
+    private readonly serviceTokens: ServiceTokenService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -77,15 +82,29 @@ export class AuthGuard implements CanActivate {
 
     if (!token) throw unauthenticated();
 
-    const principal = isWidgetToken(token)
-      ? await this.widgetSessions.verify(token)
-      : await this.accessTokens.verify(token);
+    const principal = await this.resolve(token);
 
     if (!principal) throw unauthenticated();
 
     request[PRINCIPAL_KEY] = principal;
 
     return true;
+  }
+
+  /**
+   * Bearer value to principal, by prefix.
+   *
+   * A chain rather than a map, because the staff token is the one with no
+   * prefix of its own — it is a bare JWT — so it can only be the fallthrough.
+   * Each verifier answers `null` for anything it cannot use, and this method
+   * has no opinion about why: three different reasons for "no" would be three
+   * different 401s to distinguish from the outside.
+   */
+  private async resolve(token: string): Promise<RequestPrincipal | null> {
+    if (isServiceToken(token)) return this.serviceTokens.verify(token);
+    if (isWidgetToken(token)) return this.widgetSessions.verify(token);
+
+    return this.accessTokens.verify(token);
   }
 }
 
