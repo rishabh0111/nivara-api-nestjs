@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { buildPage, Page } from '../common/pagination/page';
 import { Message } from '../generated/prisma/client';
+import { RealtimeService } from '../realtime/realtime.service';
 import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
 import {
   assertTicketVisible,
@@ -26,7 +27,10 @@ import {
  */
 @Injectable()
 export class MessageService {
-  constructor(private readonly tenancy: TenancyService) {}
+  constructor(
+    private readonly tenancy: TenancyService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   /**
    * Posts a customer-visible Message.
@@ -66,9 +70,17 @@ export class MessageService {
     ticketId: string,
     body: string,
   ): Promise<Message> {
-    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
-      this.postIn(tx, principal, ticketId, body),
+    const message = await this.tenancy.withTenant(
+      tenantContextFor(principal),
+      (tx) => this.postIn(tx, principal, ticketId, body),
     );
+
+    // After the commit, and only on this path. `postIn` announces nothing,
+    // because its caller owns the transaction and a reply that reopens a Ticket
+    // has two facts to announce together — see `ContactReplyService`.
+    await this.realtime.messageCreated(message);
+
+    return message;
   }
 
   /**

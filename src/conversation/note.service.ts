@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { buildPage, Page } from '../common/pagination/page';
 import { Note } from '../generated/prisma/client';
+import { RealtimeService } from '../realtime/realtime.service';
 import { TenancyService } from '../tenancy/tenancy.service';
 import {
   assertTicketVisible,
@@ -26,7 +27,10 @@ import {
  */
 @Injectable()
 export class NoteService {
-  constructor(private readonly tenancy: TenancyService) {}
+  constructor(
+    private readonly tenancy: TenancyService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   /**
    * Writes an internal Note.
@@ -41,11 +45,21 @@ export class NoteService {
     ticketId: string,
     body: string,
   ): Promise<Note> {
-    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
-      tx.note
-        .create({ data: { tenantId: principal.tenantId, ticketId, body } })
-        .catch(rethrowMissingTicket),
+    const note = await this.tenancy.withTenant(
+      tenantContextFor(principal),
+      (tx) =>
+        tx.note
+          .create({ data: { tenantId: principal.tenantId, ticketId, body } })
+          .catch(rethrowMissingTicket),
     );
+
+    // Into the `:internal` room, which is the whole of the separation on the
+    // socket — the same separation this service keeps in the database by never
+    // naming `tx.message`. Neither half knows about the other, and that is why
+    // there is no argument here that could send a Note to the customer's room.
+    await this.realtime.noteCreated(note);
+
+    return note;
   }
 
   /** A page of one Ticket's Notes, on their own surface. */

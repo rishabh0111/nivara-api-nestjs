@@ -7,6 +7,7 @@ import { AppConfigModule } from './config/app-config.module';
 import { HealthModule } from './health/health.module';
 import { MetaModule } from './meta/meta.module';
 import { PortalModule } from './portal/portal.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { ServiceTokensModule } from './service-tokens/service-tokens.module';
 import { StaffModule } from './staff/staff.module';
 import { TenancyModule } from './tenancy/tenancy.module';
@@ -23,6 +24,7 @@ import { WidgetModule } from './widget/widget.module';
     ConversationModule,
     PortalModule,
     WidgetModule,
+    RealtimeModule,
     ServiceTokensModule,
     AuditModule,
     HealthModule,

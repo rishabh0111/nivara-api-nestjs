@@ -7,6 +7,7 @@ import {
   TicketSource,
   TicketState,
 } from '../generated/prisma/client';
+import { RealtimeService } from '../realtime/realtime.service';
 import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
 import { inChainWith } from '../tickets/chain';
 import { rethrowChainConflict, TicketService } from '../tickets/ticket.service';
@@ -54,6 +55,7 @@ export class ContactReplyService {
     private readonly tenancy: TenancyService,
     private readonly tickets: TicketService,
     private readonly messages: MessageService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   /**
@@ -74,22 +76,69 @@ export class ContactReplyService {
     body: string,
     source: TicketSource,
   ): Promise<ContactReply> {
-    return this.tenancy.withTenant(tenantContextFor(principal), async (tx) => {
-      const addressed = await tx.ticket.findUnique({ where: { id: ticketId } });
+    const { reply, landing } = await this.tenancy.withTenant(
+      tenantContextFor(principal),
+      async (tx) => {
+        const addressed = await tx.ticket.findUnique({
+          where: { id: ticketId },
+        });
 
-      // A Ticket requested by another Contact is invisible in this context, so
-      // this is the same 404 a nonexistent one gets — which is the answer it
-      // must be, since the alternative confirms somebody else's support request
-      // is real.
-      if (!addressed) throw AppException.notFound('Ticket');
+        // A Ticket requested by another Contact is invisible in this context, so
+        // this is the same 404 a nonexistent one gets — which is the answer it
+        // must be, since the alternative confirms somebody else's support request
+        // is real.
+        if (!addressed) throw AppException.notFound('Ticket');
 
-      const target = await this.targetFor(tx, principal, addressed, source);
+        const target = await this.targetFor(tx, principal, addressed, source);
 
-      return {
-        ticket: target,
-        message: await this.messages.postIn(tx, principal, target.id, body),
-      };
-    });
+        return {
+          landing: target.landing,
+          reply: {
+            ticket: target.ticket,
+            message: await this.messages.postIn(
+              tx,
+              principal,
+              target.ticket.id,
+              body,
+            ),
+          },
+        };
+      },
+    );
+
+    await this.announce(reply, landing);
+
+    return reply;
+  }
+
+  /**
+   * The reply, announced on the socket once its transaction has committed.
+   *
+   * Two facts, in the order a console needs to apply them: the Ticket first,
+   * then the Message on it. A dashboard receiving the Message first would be
+   * asked to render an entry on a Ticket it has never heard of — which is
+   * exactly the case for a spawn, where the Ticket is new — and would have to
+   * hold it aside until the other event arrived.
+   *
+   * The three landings really are three different announcements, which is why
+   * the branch this switch reads was threaded back out of the transaction rather
+   * than re-derived here. A spawn is `ticket.created` because a Ticket appeared
+   * in the queue; a reopen is `ticket.updated` because one moved; an append
+   * changed no Ticket at all and announcing one would have a dashboard
+   * re-rendering a row for something that only happened in the thread.
+   *
+   * `join` is a reopen for this purpose and not a creation: the Ticket the reply
+   * landed on already existed and was already announced when it was spawned, so
+   * a second `ticket.created` would have a console adding the same row twice.
+   */
+  private async announce(
+    reply: ContactReply,
+    landing: ReplyLanding,
+  ): Promise<void> {
+    if (landing === 'spawn') await this.realtime.ticketCreated(reply.ticket);
+    if (landing === 'reopen') await this.realtime.ticketUpdated(reply.ticket);
+
+    await this.realtime.messageCreated(reply.message);
   }
 
   /** Where this reply belongs, after any state change it causes. */
@@ -98,10 +147,10 @@ export class ContactReplyService {
     principal: ContactPrincipal,
     addressed: Ticket,
     source: TicketSource,
-  ): Promise<Ticket> {
+  ): Promise<ReplyTarget> {
     switch (replyOutcomeFor(addressed.state)) {
       case 'append':
-        return addressed;
+        return { ticket: addressed, landing: 'append' };
 
       // Always to `open`, never back to whatever it was before. `resolved` and
       // `pending` both mean "the ball is not in our court", and a reply moves it
@@ -113,12 +162,15 @@ export class ContactReplyService {
       // permitted it. The audit row is attributed to the Contact, which is the
       // honest answer to "who reopened this".
       case 'reopen':
-        return this.tickets.transitionIn(
-          tx,
-          principal,
-          addressed.id,
-          TicketState.open,
-        );
+        return {
+          ticket: await this.tickets.transitionIn(
+            tx,
+            principal,
+            addressed.id,
+            TicketState.open,
+          ),
+          landing: 'reopen',
+        };
 
       case 'spawn':
         return this.spawnOrJoinLive(tx, principal, addressed, source);
@@ -146,7 +198,7 @@ export class ContactReplyService {
     principal: ContactPrincipal,
     parent: Ticket,
     source: TicketSource,
-  ): Promise<Ticket> {
+  ): Promise<ReplyTarget> {
     const live = await tx.ticket.findFirst({
       where: {
         ...inChainWith(parent),
@@ -167,8 +219,9 @@ export class ContactReplyService {
     // alone.
     if (live) return this.targetFor(tx, principal, live, source);
 
-    return (
-      this.tickets
+    return {
+      landing: 'spawn',
+      ticket: await this.tickets
         .createIn(tx, principal, {
           // Inherited verbatim, and deliberately not prefixed. A `Re:` would accrete
           // on every spawn in a long-running conversation, and it would be a second,
@@ -193,7 +246,29 @@ export class ContactReplyService {
         // The read above lost a race: another reply spawned this chain's live
         // Ticket between that query and this insert, and the unique index refused
         // the duplicate.
-        .catch(rethrowChainConflict)
-    );
+        .catch(rethrowChainConflict),
+    };
   }
+}
+
+/**
+ * Which of the three things a reply did to a Ticket.
+ *
+ * Distinct from `replyOutcomeFor`'s answer, which is a decision made from the
+ * addressed Ticket's state *before* anything happens. This is what actually
+ * became of the reply — the two differ in exactly one case, where a `spawn`
+ * decision meets a chain that already has a live Ticket and lands as a `reopen`
+ * or an `append` on it instead.
+ *
+ * It exists because the socket needs it and nothing else does: only the
+ * announcement has to tell a new Ticket from a moved one. It is carried out of
+ * the transaction rather than recomputed afterwards, because after the commit
+ * there is no longer enough information to tell the two apart — a Ticket spawned
+ * a moment ago and one spawned last week look identical.
+ */
+type ReplyLanding = 'append' | 'reopen' | 'spawn';
+
+interface ReplyTarget {
+  ticket: Ticket;
+  landing: ReplyLanding;
 }

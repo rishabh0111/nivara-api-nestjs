@@ -22,6 +22,7 @@ import {
   TicketSource,
   TicketState,
 } from '../generated/prisma/client';
+import { RealtimeService } from '../realtime/realtime.service';
 import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
 import { inChainWith } from './chain';
 import { canTransition } from './state-machine';
@@ -73,6 +74,7 @@ export class TicketService {
   constructor(
     private readonly tenancy: TenancyService,
     private readonly audit: AuditService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   /**
@@ -103,9 +105,20 @@ export class TicketService {
     principal: RequestPrincipal,
     input: CreateTicketInput,
   ): Promise<Ticket> {
-    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
-      this.createIn(tx, principal, input),
+    const ticket = await this.tenancy.withTenant(
+      tenantContextFor(principal),
+      (tx) => this.createIn(tx, principal, input),
     );
+
+    // Announced after the commit, never inside it. An event emitted from within
+    // the transaction would describe a Ticket that a later statement can still
+    // roll back — and a socket has no way to retract what it has already
+    // delivered, so a dashboard would be left holding a Ticket that does not
+    // exist. The `*In` variants below therefore emit nothing at all: the caller
+    // that owns the transaction is the only one that knows when it committed.
+    await this.realtime.ticketCreated(ticket);
+
+    return ticket;
   }
 
   /**
@@ -243,9 +256,14 @@ export class TicketService {
     id: string,
     to: TicketState,
   ): Promise<Ticket> {
-    return this.tenancy.withTenant(tenantContextFor(principal), (tx) =>
-      this.transitionIn(tx, principal, id, to),
+    const ticket = await this.tenancy.withTenant(
+      tenantContextFor(principal),
+      (tx) => this.transitionIn(tx, principal, id, to),
     );
+
+    await this.realtime.ticketUpdated(ticket);
+
+    return ticket;
   }
 
   /**
@@ -322,7 +340,11 @@ export class TicketService {
     id: string,
     priority: TicketPriority,
   ): Promise<Ticket> {
-    return this.update(principal, id, { priority });
+    const ticket = await this.update(principal, id, { priority });
+
+    await this.realtime.ticketUpdated(ticket);
+
+    return ticket;
   }
 
   /**
@@ -341,7 +363,7 @@ export class TicketService {
     id: string,
     assigneeId: string | null,
   ): Promise<Ticket> {
-    return this.update(principal, id, { assigneeId }).catch(
+    const ticket = await this.update(principal, id, { assigneeId }).catch(
       (error: unknown) => {
         // A User id from another tenant, or one that never existed. Both are
         // the same 404 for the same reason the Contact case is.
@@ -350,6 +372,15 @@ export class TicketService {
         throw error;
       },
     );
+
+    // `ticketAssigned` and not `ticketUpdated`, though the payload is the same
+    // snapshot. The dashboard reacts to a handover — a row moving into or out of
+    // "mine" — where it merely re-renders an edit, and that difference is
+    // carried by the event name rather than by a client diffing two snapshots to
+    // work out which column moved.
+    await this.realtime.ticketAssigned(ticket);
+
+    return ticket;
   }
 
   /**

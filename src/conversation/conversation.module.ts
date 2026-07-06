@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { RealtimeModule } from '../realtime/realtime.module';
 import { TicketsModule } from '../tickets/tickets.module';
 import { ContactReplyService } from './contact-reply.service';
 import { MessageService } from './message.service';
@@ -33,12 +34,19 @@ import { NotesController } from './notes.controller';
  * edge is what a Message hook inside the state machine would have created, and
  * it would have put reply semantics in the middle of the queue.
  *
+ * `RealtimeModule` is imported directly rather than leaned on through
+ * `TicketsModule`, even though that module already has it. Both halves of this
+ * one announce on their own terms — a Message into the Ticket's customer-visible
+ * room, a Note into the `:internal` room beside it — so the dependency is this
+ * module's own, and inheriting it transitively would make it disappear the day
+ * the queue stopped needing it.
+ *
  * `ContactReplyService` is exported for the portal, the only surface that can
  * produce a Contact's reply today. The widget and Slack ingestion join it later
  * on exactly the same terms — they differ only in the Source they pass.
  */
 @Module({
-  imports: [TicketsModule],
+  imports: [TicketsModule, RealtimeModule],
   controllers: [MessagesController, NotesController],
   providers: [ContactReplyService, MessageService, NoteService],
   exports: [ContactReplyService, MessageService],
