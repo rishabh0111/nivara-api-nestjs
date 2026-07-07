@@ -62,6 +62,19 @@ export class AppConfigService {
   }
 
   /**
+   * Whether this process runs the scheduler's ticks.
+   *
+   * Read in two places that must never disagree — the ticker, deciding whether
+   * to start, and readiness, deciding whether a missing heartbeat is an outage
+   * or the expected state. If readiness inferred it from whether any tick had
+   * registered instead, a ticker that threw during bootstrap would report as a
+   * healthy dormant scheduler, which is the one failure worth catching.
+   */
+  get runScheduler(): boolean {
+    return this.get('RUN_SCHEDULER');
+  }
+
+  /**
    * Which optional integrations are live.
    *
    * A dormant integration is the normal state, not a degraded one: the demo

@@ -8,6 +8,7 @@ import { HealthModule } from './health/health.module';
 import { MetaModule } from './meta/meta.module';
 import { PortalModule } from './portal/portal.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 import { ServiceTokensModule } from './service-tokens/service-tokens.module';
 import { StaffModule } from './staff/staff.module';
 import { TenancyModule } from './tenancy/tenancy.module';
@@ -26,6 +27,7 @@ import { WidgetModule } from './widget/widget.module';
     WidgetModule,
     RealtimeModule,
     ServiceTokensModule,
+    SchedulerModule,
     AuditModule,
     HealthModule,
     MetaModule,

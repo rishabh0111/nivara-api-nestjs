@@ -50,8 +50,127 @@ model Tenant {
   notes          Note[]
   widgetSessions WidgetSession[]
   serviceTokens  ServiceToken[]
+  jobs           Job[]
 
   @@map("tenant")
+}
+
+/// Where a queued unit of work is in its life.
+///
+/// Four states and one arrow out of each: `ready` is claimable, `active` is
+/// claimed by some drainer, and `done` and `dead` are both terminal. `dead` is
+/// deliberately not an error flag on a `done` row — a job that exhausted its
+/// attempts is a thing an operator has to look at, and it should be findable by
+/// state rather than by remembering which column to filter on.
+enum JobStatus {
+  ready
+  active
+  done
+  dead
+
+  @@map("job_status")
+}
+
+/// One unit of externally-fallible work, durable because it lives in Postgres.
+///
+/// The queue exists for a single property: work accepted from outside must
+/// survive a restart of the web process. An inbound Slack event is acknowledged
+/// within three seconds and processed afterwards, so the gap between "we said
+/// yes" and "we did it" is exactly the window a process restart must not lose.
+/// An in-memory timer cannot promise that; a row can, for free.
+///
+/// Postgres rather than Redis/BullMQ, and the reason is portability rather than
+/// preference. The claim is `SELECT … FOR UPDATE SKIP LOCKED`, which is SQL that
+/// all three ports run unchanged — durability and mutual exclusion become
+/// properties of the schema, exactly like tenant isolation, instead of a
+/// Redis-shaped thing each port re-solves. It also lands in the same store the
+/// rest of the domain writes to, so enqueueing rides the caller's transaction
+/// and a job cannot exist for a write that rolled back.
+///
+/// What does *not* belong here is as important. Internal, idempotent, non-
+/// failing effects — the SLA breach latch, the dwell transitions — act directly
+/// in the sweep's own transaction. They have no network call to fail, so there
+/// is nothing to retry, and routing them through a queue would buy retry
+/// machinery for work that cannot fail. The line is: **queue = external
+/// at-least-once work with retry; sweep = internal idempotent effects.**
+model Job {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Which Tenant this work belongs to.
+  ///
+  /// Present even though the drainer claims across every Tenant at once, and
+  /// that is the point: the claim reads this column precisely so the *handler*
+  /// can be run inside `withTenant()` under it. The queue is the one place a
+  /// loop sees rows from more than one Tenant, and it hands each row back to
+  /// the normal isolated path before any domain work happens.
+  ///
+  /// Defaulted from the armed context, exactly as `audit_log` is, so an enqueue
+  /// site never names a tenant. It cannot: work is queued from inside the
+  /// transaction that decided to queue it, so the tenant is already established
+  /// and passing it again could only introduce disagreement. The policy's
+  /// `WITH CHECK` is the backstop if one ever tries.
+  tenantId String @default(dbgenerated("NULLIF(current_setting('app.current_tenant', true), '')::uuid")) @map("tenant_id") @db.Uuid
+
+  /// What to do, as a routing key into the handler registry.
+  ///
+  /// Text rather than a Postgres enum. Kinds arrive with integrations — an
+  /// adapter that does not exist yet brings its own — and a database enum would
+  /// make adding one a migration in three ports. The catalog that matters is
+  /// the registry in the application, and an unknown kind is a dead-lettered
+  /// job rather than a rejected insert.
+  kind String
+
+  /// The arguments, and by convention *references* rather than content: ids the
+  /// handler re-reads inside a tenant context, never a copy of the row.
+  ///
+  /// Not a style preference. The drainer's claim is the single query in this
+  /// application that crosses tenants, so anything stored here is readable by a
+  /// loop with no tenant armed. Keeping payloads to ids means that loop carries
+  /// routing information and nothing a Tenant would mind another seeing — and
+  /// it keeps a job from acting on a stale copy of a row that has since changed.
+  payload Json @db.JsonB
+
+  /// The earliest this job may be claimed.
+  ///
+  /// The whole of scheduling and the whole of backoff, in one column. A retry is
+  /// a row with a later `run_after`, not a sleeping worker: nothing is held open
+  /// across the wait, a restart loses no timers, and a delayed job and a retried
+  /// job are the same mechanism rather than two.
+  runAfter DateTime @default(now()) @map("run_after") @db.Timestamptz(3)
+
+  /// How many times a claim has been handed out — incremented *at claim*, not
+  /// at failure. A worker that dies mid-handler leaves no failure record, so
+  /// counting failures would let a job that reliably crashes the process be
+  /// retried forever.
+  attempts Int @default(0)
+
+  /// Attempts after which the job is `dead` rather than retried. Per-row rather
+  /// than a constant, so a kind whose failures are worth more patience can say
+  /// so without changing the drainer.
+  maxAttempts Int @default(5) @map("max_attempts")
+
+  status JobStatus @default(ready)
+
+  /// When the current claim was taken, and null whenever the job is not
+  /// `active`. It is what makes a claim a *lease*: a drainer killed between
+  /// claiming and settling would otherwise strand the row in `active` forever,
+  /// with no failure to retry and no error to look at.
+  lockedAt DateTime? @map("locked_at") @db.Timestamptz(3)
+
+  /// The most recent failure, for the operator reading a `dead` row. Overwritten
+  /// each attempt: the audit trail is where history lives, and a job table that
+  /// accumulated error history would be a second, worse one.
+  lastError String? @map("last_error")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// The claim's index, and the only read that has to be fast. Ordered as the
+  /// claim filters: status first, then the due time it scans forward through.
+  @@index([status, runAfter])
+  @@map("job")
 }
 
 /// An anonymous visitor's handle on a Tenant's own site.

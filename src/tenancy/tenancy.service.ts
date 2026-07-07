@@ -62,4 +62,63 @@ export class TenancyService {
       return work(tx);
     });
   }
+
+  /**
+   * Whether the database answers at all.
+   *
+   * A boolean rather than a throw, because the only caller is readiness and a
+   * health check that has to catch to learn its answer is a boolean with extra
+   * steps. It reads no row and arms no context on purpose: this asks whether
+   * Postgres is reachable, and a query that could also fail on a policy would
+   * conflate "the database is down" with "this context sees nothing" — which
+   * are different incidents with different responses.
+   */
+  async ping(): Promise<boolean> {
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Runs `work` inside one transaction with the *scheduler* context armed —
+   * the one context in this application that is not scoped to a tenant.
+   *
+   * It exists because the drainer's central question is "which tenant's work is
+   * due next", and a context has to be armed before that can be asked. Every
+   * other caller learns its tenant from a credential and arms it; this one
+   * learns its tenant *from the row it claims*, which is the wrong way round for
+   * `withTenant()`.
+   *
+   * What it is not: a bypass. The setting it arms is named by exactly one
+   * policy, on `job`, so a transaction opened here can read the queue and
+   * nothing else — no ticket, no message, no contact, in any tenant. That is a
+   * property of the migration rather than of this method, which is what makes it
+   * worth relying on; `scheduler.int-spec.ts` asserts both halves, including a
+   * scan of `pg_policies` to catch a second table growing the same clause.
+   *
+   * `app.current_tenant` is armed to the empty string rather than left unset.
+   * The tenant policies map empty to NULL and a NULL predicate is not true, so
+   * the fail-closed behaviour is identical — but arming it explicitly means this
+   * transaction cannot inherit a value from anywhere, which is the property the
+   * comment on `withTenant()` spends its length on.
+   *
+   * The actor is `system`, so anything this transaction happens to write is
+   * attributed to the scheduler rather than to whoever enqueued the work.
+   */
+  async withScheduler<T>(work: (tx: TenantClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT
+          set_config('app.current_tenant', '', true),
+          set_config('app.current_actor_kind', 'system', true),
+          set_config('app.current_actor_id', '', true),
+          set_config('app.scheduler', 'on', true)
+      `;
+
+      return work(tx);
+    });
+  }
 }
