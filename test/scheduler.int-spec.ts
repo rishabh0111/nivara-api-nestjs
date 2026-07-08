@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { randomUUID } from 'node:crypto';
 import { AppModule } from 'src/app.module';
 import { DrainerService } from 'src/scheduler/drainer.service';
 import {
@@ -47,6 +48,26 @@ const jobsOf = (tenantId: string): Promise<JobRow[]> =>
        FROM job WHERE tenant_id = $1 ORDER BY created_at`,
     [tenantId],
   );
+
+/**
+ * A marked Ticket in a tenant, planted as the owner.
+ *
+ * As the owner because the point is to have one in *each* tenant at once, which
+ * no single tenant context can do — the same reason the seeded ids are read this
+ * way. It borrows whichever Contact the seed left, since who requested it is not
+ * what the test is about.
+ */
+const plantTicket = async (tenantId: string, mark: string): Promise<string> => {
+  const [row] = await asOwner<{ id: string }>(
+    `INSERT INTO ticket (id, tenant_id, subject, contact_id, source, updated_at)
+     SELECT gen_random_uuid(), $1, $2, c.id, 'portal', now()
+       FROM contact c WHERE c.tenant_id = $1 LIMIT 1
+     RETURNING id::text`,
+    [tenantId, `${mark} ${tenantId}`],
+  );
+
+  return row.id;
+};
 
 const jobById = async (id: string): Promise<JobRow> => {
   const rows = await asOwner<JobRow>(
@@ -281,20 +302,39 @@ describe('scheduler runtime', () => {
       // The cross-tenant view the claim needed stops at this boundary: by the
       // time domain work happens the ordinary policies are armed, so a handler
       // sees exactly what a request in that tenant would.
-      let visible: number | null = null;
-      handlers['test.scope'] = async (_payload, { tx }) => {
-        visible = await tx.ticket.count();
+      //
+      // Asserted over two Tickets this test plants rather than over a count of
+      // the table. A count is a claim about every row in the tenant, so a suite
+      // running in a parallel worker that opens or deletes a Ticket mid-tick
+      // falsifies it — which is a fact about Jest's scheduling, not about the
+      // policies. Two marked rows answer the same question and can only be
+      // changed by this test.
+      const mark = `scope-${randomUUID()}`;
+      const planted = {
+        [tenants.meridian]: await plantTicket(tenants.meridian, mark),
+        [tenants.sortwood]: await plantTicket(tenants.sortwood, mark),
       };
 
-      await enqueueFor(tenants.meridian, 'test.scope');
-      await drainer.tick();
+      let visible: string[] = [];
+      handlers['test.scope'] = async (_payload, { tx }) => {
+        const rows = await tx.ticket.findMany({
+          where: { subject: { startsWith: mark } },
+          select: { id: true },
+        });
 
-      const [{ count }] = await asOwner<{ count: string }>(
-        'SELECT count(*)::text AS count FROM ticket WHERE tenant_id = $1',
-        [tenants.meridian],
-      );
+        visible = rows.map((row) => row.id);
+      };
 
-      expect(visible).toBe(Number(count));
+      try {
+        await enqueueFor(tenants.meridian, 'test.scope');
+        await drainer.tick();
+
+        // Its own tenant's, and only its own — the job named the tenant, and
+        // the policies decided the rest.
+        expect(visible).toEqual([planted[tenants.meridian]]);
+      } finally {
+        await asOwner(`DELETE FROM ticket WHERE subject LIKE $1`, [`${mark}%`]);
+      }
     });
 
     it('marks a successful job done and releases its lease', async () => {

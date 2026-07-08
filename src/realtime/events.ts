@@ -11,9 +11,10 @@ import { isStaff, RealtimePrincipal } from './realtime-principal';
  * A closed catalog for the same reason `ERROR_CATALOG` is one: `nivara-web`
  * branches on these names, so adding one is a deliberate act belonging to the
  * ticket that introduces the fact being announced, and renaming one is a
- * breaking change. Tickets 15 and 17 add `ticket.sla.breached` and
- * `ticket.integration.failed` to this array and to nothing else — the envelope,
- * the rooms, and the sequencing are already general over it.
+ * breaking change. `ticket.sla.breached` arrived that way and cost exactly the
+ * three lines the design predicted — this array, a payload, an audience — with
+ * the envelope, the rooms, and the sequencing already general over it. Ticket 17
+ * adds `ticket.integration.failed` on the same terms.
  *
  * Typing and presence are deliberately absent, and the envelope is what makes
  * adding them later cheap rather than a version bump.
@@ -24,6 +25,7 @@ export const REALTIME_EVENTS = [
   'ticket.assigned',
   'message.created',
   'note.created',
+  'ticket.sla.breached',
 ] as const;
 
 export type RealtimeEvent = (typeof REALTIME_EVENTS)[number];
@@ -79,6 +81,29 @@ export interface ThreadEntrySnapshot {
   createdAt: string;
 }
 
+/** Which of a Ticket's two clocks ran out. */
+export type SlaTimer = 'first_response' | 'resolution';
+
+/**
+ * A promise the tenant did not keep.
+ *
+ * Not a `TicketSnapshot`, and that is the point rather than an omission. The
+ * three ticket events announce that a Ticket changed; this one announces that
+ * *nothing* changed for too long, and the Ticket's columns are the same as they
+ * were a second ago. A snapshot would invite a console to render it as an update
+ * and diff away the only fact being reported.
+ *
+ * `breachedAt` is the latch value, not the emission time — the two differ by
+ * however long the sweep took to notice, and a dashboard sorting by urgency
+ * wants the former. It is also what makes the event replayable without becoming
+ * a lie about when the deadline passed.
+ */
+export interface SlaBreachSnapshot {
+  ticketId: string;
+  timer: SlaTimer;
+  breachedAt: string;
+}
+
 /** The payload each event carries, keyed by event name. */
 export interface RealtimePayloads {
   'ticket.created': TicketSnapshot;
@@ -86,6 +111,7 @@ export interface RealtimePayloads {
   'ticket.assigned': TicketSnapshot;
   'message.created': ThreadEntrySnapshot;
   'note.created': ThreadEntrySnapshot;
+  'ticket.sla.breached': SlaBreachSnapshot;
 }
 
 /**
@@ -139,6 +165,13 @@ const AUDIENCE: Record<RealtimeEvent, Audience> = {
   // own messages — so "the thread" is exactly where a naive broadcast would put
   // it in front of them.
   'note.created': 'staff',
+  // The second staff-only entry, and for a different reason than the first. A
+  // Note is staff-only because of what it contains; a breach is staff-only
+  // because of what it admits. It only ever goes to the agents room, which a
+  // Contact cannot join — so like `note.created`, this line is the backstop
+  // rather than the barrier, and it is what makes a future mis-routed emit
+  // deliver to nobody instead of telling a customer their ticket was missed.
+  'ticket.sla.breached': 'staff',
 };
 
 export const audienceOf = (event: RealtimeEvent): Audience => AUDIENCE[event];

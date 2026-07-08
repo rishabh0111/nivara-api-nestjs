@@ -51,8 +51,37 @@ model Tenant {
   widgetSessions WidgetSession[]
   serviceTokens  ServiceToken[]
   jobs           Job[]
+  slaTargets     SlaTarget[]
 
   @@map("tenant")
+}
+
+/// What this tenant promises, per priority.
+///
+/// Priority is the sole SLA key — state never selects a target — so a Ticket's
+/// two deadlines are predictable from the one field an agent can see and set.
+///
+/// One identical copy per tenant, seeded by a trigger on tenant creation rather
+/// than by the seed script, so no creation path can produce a tenant whose
+/// Tickets are scored against nothing. The values are fixed in v1 and `app_user`
+/// holds only `SELECT` on the table — "not API-editable" is a withheld privilege
+/// rather than a missing controller, which is a claim that survives the port to
+/// Spring and FastAPI. `sla:configure` exists in the permission catalog for the
+/// day that changes.
+model SlaTarget {
+  tenantId String         @map("tenant_id") @db.Uuid
+  priority TicketPriority
+
+  /// Milliseconds rather than an `interval`, because breach compares these
+  /// against an elapsed figure analytics also aggregates, and a number needs no
+  /// per-stack mapping.
+  firstResponseMs BigInt @map("first_response_ms")
+  resolutionMs    BigInt @map("resolution_ms")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, priority])
+  @@map("sla_target")
 }
 
 /// Where a queued unit of work is in its life.
@@ -595,8 +624,42 @@ model Ticket {
   /// have to reimplement.
   rootTicketId String? @map("root_ticket_id") @db.Uuid
 
+  /// When an agent or the AI layer first said something the Contact can see.
+  ///
+  /// Set once by a trigger on `message` insert and never overwritten — a Note
+  /// or a bare state change never satisfies it, so internal activity cannot
+  /// stand in for an answer. Null means the first-response clock is still
+  /// running.
+  firstResponseAt DateTime? @map("first_response_at") @db.Timestamptz(3)
+
+  /// The resolution clock's pause accumulator: closed intervals in
+  /// `slaPausedMs`, the open one anchored at `slaPauseStartedAt`.
+  ///
+  /// Maintained by the state-machine trigger, which is what makes breach a pure
+  /// function of this one row rather than a replay of the Ticket's history.
+  /// The clock pauses in `pending`, `resolved` and `closed`, and deliberately
+  /// keeps running in `on_hold`.
+  slaPausedMs       BigInt    @default(0) @map("sla_paused_ms")
+  slaPauseStartedAt DateTime? @map("sla_pause_started_at") @db.Timestamptz(3)
+
+  /// The two sticky breach latches. Set once by the SLA sweep, never cleared —
+  /// a late reply does not un-breach and neither does a reopen. Each is
+  /// simultaneously the record analytics counts and the fire-once guard the
+  /// escalation notification rests on.
+  firstResponseBreachedAt DateTime? @map("first_response_breached_at") @db.Timestamptz(3)
+  resolutionBreachedAt    DateTime? @map("resolution_breached_at") @db.Timestamptz(3)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  /// When anything last happened here — a transition, an assignment, a priority
+  /// change, a Message or a Note. Read by the two dwell timers and nothing else.
+  ///
+  /// Distinct from `updatedAt`, which moves only when a column on this table is
+  /// written: a customer's reply is activity and touches none of them. Bumping
+  /// `updatedAt` from a trigger would have quietly redefined the `updatedAt`
+  /// sort on the queue list, so the new fact got a new column.
+  lastActivityAt DateTime @default(now()) @map("last_activity_at") @db.Timestamptz(3)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -663,6 +726,9 @@ model Ticket {
   // primary key. Ordered by `createdAt` because that is the order the
   // conversation happened in, which is the only order it reads as a narrative.
   @@index([tenantId, rootTicketId, createdAt])
+  // The two sweep scans, both partial and both stated in the migration instead
+  // — Prisma manages neither partial index. `ticket_sla_unlatched_idx` covers
+  // the breach scan, `ticket_dwell_idx` the two dwell scans.
   // Not expressible here, and stated in the migration instead: a unique partial
   // index on `(tenantId, COALESCE(rootTicketId, id)) WHERE state <> 'closed'`,
   // which is the re-reply invariant — at most one live Ticket per chain, so a

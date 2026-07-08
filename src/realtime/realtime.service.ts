@@ -4,6 +4,7 @@ import { EventLog } from './event-log';
 import {
   RealtimeEvent,
   RealtimePayloads,
+  SlaBreachSnapshot,
   ThreadEntrySnapshot,
   TicketSnapshot,
 } from './events';
@@ -117,6 +118,28 @@ export class RealtimeService {
       'note.created',
       threadEntry(note),
     );
+  }
+
+  /**
+   * A missed deadline, to the dashboard.
+   *
+   * The agents room only, and never the Ticket's own room: a customer watching
+   * their thread has no business being told the team failed them, and a console
+   * that wants to show it can. It is also the whole of what escalation does —
+   * the system announces the breach and changes nothing, because bumping the
+   * priority would retroactively change the target the Ticket is scored against
+   * and reassigning it would need a supervisor role that does not exist.
+   *
+   * Fire-once is upstream of here, in the `IS NULL` latch predicate the sweep
+   * writes through. This method is called once per timer per Ticket for the life
+   * of the Ticket, and it does nothing to enforce that — a de-duplicating emit
+   * would be a second guard hiding whether the first one works.
+   */
+  async slaBreached(
+    tenantId: string,
+    breach: SlaBreachSnapshot,
+  ): Promise<void> {
+    await this.publish(agentsRoom(tenantId), 'ticket.sla.breached', breach);
   }
 
   private async publish<E extends RealtimeEvent>(

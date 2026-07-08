@@ -120,6 +120,8 @@ npm run openapi:emit  # writes openapi.json
 
 Tests run at two seams and no others: the booted application driven over its public protocols (Supertest for HTTP), and — once the scheduler exists — a directly-invokable scheduler tick. Tests do not mock the data layer. The load-bearing invariants in this system live in SQL rather than in application code, so a test that mocks Postgres proves nothing about them.
 
+Every suite that touches the database runs **in band**, one at a time. They share one Postgres and one seed, and several of them assert over rows they did not create — a Ticket count, a job left undrained. Under Jest's default parallelism those assertions are races that pass or fail on worker scheduling, which is the worst kind of red: it appears when an unrelated suite is added and disappears when the file is run alone. `test:unit` stays parallel, because it opens no connection and has nothing to race against.
+
 That is why the `*.int-spec.ts` files are in the **default** run rather than behind an opt-in flag. They are the only thing that demonstrates isolation actually holds, and they connect as `app_user` — point them at the owner instead and every one of their assertions collapses. A suite that stayed green while RLS was disabled would be worse than no suite. `test:unit` exists for the tight loop, not as the thing CI runs.
 
 ## Configuration

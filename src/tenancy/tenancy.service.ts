@@ -121,4 +121,82 @@ export class TenancyService {
       return work(tx);
     });
   }
+
+  /**
+   * Lists every tenant the sweeps have to visit.
+   *
+   * The one question a sweep cannot ask from inside a tenant context, and
+   * therefore the only thing this context is for. A sweep's effects fire on the
+   * absence of an event, so unlike every other write path there is no request,
+   * no credential, and nothing to learn the tenant from — it has to go and look
+   * in all of them.
+   *
+   * Deliberately a second setting rather than a reuse of `app.scheduler`.
+   * Widening the drainer's context to cover `tenant` would have enlarged an
+   * existing capability in order to avoid naming a new one, and the two would
+   * then be indistinguishable to anyone auditing what each can reach. As it
+   * stands each names one table and one operation: the drainer claims jobs, the
+   * sweeper enumerates tenants, and neither can see a Ticket.
+   *
+   * The return type is the narrowest thing that answers the question. Handing
+   * back rows would make this a general tenant read, and the next caller would
+   * reach for a column it has no business having cross-tenant.
+   *
+   * `private` because `forEachTenant()` is the only sanctioned way to use it —
+   * see there for why the enumeration and the visit belong together.
+   */
+  private async sweepableTenantIds(): Promise<string[]> {
+    const rows = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT
+          set_config('app.current_tenant', '', true),
+          set_config('app.current_actor_kind', 'system', true),
+          set_config('app.current_actor_id', '', true),
+          set_config('app.sweeper', 'on', true)
+      `;
+
+      return tx.$queryRaw<
+        { id: string }[]
+      >`SELECT "id" FROM "tenant" ORDER BY "id"`;
+    });
+
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Runs `work` once per tenant, each in its own armed transaction, and returns
+   * everything the visits collected.
+   *
+   * This is what a sweep is, structurally, and it lives here rather than in each
+   * sweep because getting it wrong is invisible. The enumeration is deliberately
+   * not exposed on its own: a caller holding a bare list of tenant ids is one
+   * line away from doing the interesting part under the *sweeper* context, which
+   * can read nothing, or from arming a tenant with the wrong actor. Handing back
+   * ids and trusting every future sweep to arm them correctly is the kind of
+   * seam that holds until the third caller.
+   *
+   * A transaction each rather than one spanning all of them, so a tenant whose
+   * visit throws does not roll back the tenants already swept — and so no single
+   * transaction is held open across the whole estate.
+   *
+   * The actor is `system`. A sweep acts on nobody's behalf, and every row it
+   * writes — including the audit rows the triggers emit — is attributed that way
+   * by the database rather than by the sweep saying so.
+   */
+  async forEachTenant<T>(
+    work: (tx: TenantClient, tenantId: string) => Promise<T[]>,
+  ): Promise<T[]> {
+    const collected: T[] = [];
+
+    for (const tenantId of await this.sweepableTenantIds()) {
+      collected.push(
+        ...(await this.withTenant(
+          { tenantId, actor: { kind: 'system' } },
+          (tx) => work(tx, tenantId),
+        )),
+      );
+    }
+
+    return collected;
+  }
 }

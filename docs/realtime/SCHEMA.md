@@ -182,9 +182,31 @@ There is no `ticket.state.changed`. One event per column would be a catalog that
 
 The payloads being identical is safe because nothing decides which is which from a field: a Note is a Note because it was emitted under `note.created` into the `:internal` room.
 
+### `ticket.sla.breached`
+
+`data` is a **breach**, not a Ticket snapshot:
+
+```ts
+{
+  ticketId: string;
+  timer: 'first_response' | 'resolution';
+  breachedAt: string;   // ISO-8601, the latch value
+}
+```
+
+| Event | Room | Audience |
+| --- | --- | --- |
+| `ticket.sla.breached` | `:agents` | **staff only** |
+
+Deliberately not a snapshot: the other ticket events announce that a Ticket changed, and this one announces that *nothing* changed for too long — the Ticket's columns read exactly as they did a second ago, so a console handed a snapshot would diff away the only fact being reported.
+
+`breachedAt` is the **latch value**, not the emission time. The two differ by however long the sweep took to notice, and a dashboard sorting by urgency wants the former; it is also what keeps the event truthful on replay.
+
+Emitted **once per timer for the life of the Ticket**. Fire-once rests on a set-once `IS NULL` latch column in Postgres, so it holds across repeated sweeps, a restart, and two schedulers running at once. Escalation is **notify, don't mutate** — no `ticket.updated` accompanies it, because the breach changes neither priority nor assignee.
+
 ### Reserved
 
-`ticket.sla.breached` (ticket 15) and `ticket.integration.failed` (ticket 17) arrive on this same envelope. Typing and presence indicators are **out of scope** and deliberately absent; the envelope is forward-compatible, so adding them later is additive.
+`ticket.integration.failed` (ticket 17) arrives on this same envelope. Typing and presence indicators are **out of scope** and deliberately absent; the envelope is forward-compatible, so adding them later is additive.
 
 ---
 

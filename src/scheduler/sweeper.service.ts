@@ -28,10 +28,11 @@ export interface Sweep {
 /**
  * The injection token for the registered sweeps.
  *
- * Empty in this process today. The three time-driven effects — the SLA breach
- * latch and the two 7-day dwell transitions — arrive with the SLA work and
- * register here; the runtime lands first so they have somewhere to be, and so
- * the tick can be proved before there is anything for it to do.
+ * Two sweeps carrying three time-driven effects: the SLA breach latch, and the
+ * two 7-day dwell transitions, which share one scan because they are the same
+ * question asked of two states. They arrived as registrations against this token
+ * and changed nothing in the tick above — which is what the runtime landing
+ * first, before there was anything for it to do, was for.
  */
 export const SWEEPS = 'SWEEPS';
 

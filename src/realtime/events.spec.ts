@@ -29,24 +29,28 @@ const contact: RealtimePrincipal = {
 };
 
 describe('the event catalog', () => {
-  it('is exactly the five events the contract publishes', () => {
+  it('is exactly the six events the contract publishes', () => {
     expect([...REALTIME_EVENTS]).toEqual([
       'ticket.created',
       'ticket.updated',
       'ticket.assigned',
       'message.created',
       'note.created',
+      'ticket.sla.breached',
     ]);
   });
 });
 
 describe('audience', () => {
-  it('marks note.created, and only note.created, as staff-only', () => {
+  it('marks the two events no Contact may ever receive as staff-only', () => {
+    // A Note for what it contains, a breach for what it admits. Enumerated
+    // rather than spot-checked, so a sixth event defaulting to `all` by
+    // omission fails here rather than in front of a customer.
     const staffOnly = REALTIME_EVENTS.filter(
       (event) => audienceOf(event) === 'staff',
     );
 
-    expect(staffOnly).toEqual(['note.created']);
+    expect(staffOnly).toEqual(['note.created', 'ticket.sla.breached']);
   });
 
   it('lets staff receive every event in the catalog', () => {
