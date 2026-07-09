@@ -62,10 +62,20 @@ export const ERROR_CATALOG = {
     description:
       'The request conflicts with the current state of the resource.',
   },
+  idempotency_in_flight: {
+    status: HttpStatus.CONFLICT,
+    description:
+      'An earlier request carrying this `Idempotency-Key` has not finished yet, so there is no response to replay. Retry after a short delay; the original is still running and its effect will happen exactly once. Distinct from `conflict`, which is about the resource rather than the retry.',
+  },
   validation_failed: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     description:
       'The request body failed validation. `details` enumerates one entry per offending field.',
+  },
+  idempotency_key_reused: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    description:
+      'This `Idempotency-Key` was already used for a different request. A key identifies one request, not one caller — reusing it with a changed body is refused rather than answered from the earlier request’s cached response, which would report success for an operation that never ran.',
   },
 
   // --- Throttling (429) ----------------------------------------------------

@@ -52,6 +52,7 @@ model Tenant {
   serviceTokens  ServiceToken[]
   jobs           Job[]
   slaTargets     SlaTarget[]
+  idempotency    IdempotencyRecord[]
 
   @@map("tenant")
 }
@@ -953,4 +954,94 @@ model Note {
 
   @@index([tenantId, ticketId, createdAt(sort: Desc), id(sort: Desc)])
   @@map("note")
+}
+
+/// How far along the request a key is guarding got.
+///
+/// Two states and one arrow between them, and the absence of a third is the
+/// design. There is no `failed`: a request that did not produce an answer
+/// releases its key by deleting the row, because a caller retrying a request
+/// that blew up is exactly the caller this feature exists for, and a terminal
+/// `failed` state would be a key permanently poisoned by a transient fault.
+enum IdempotencyStatus {
+  in_progress
+  completed
+
+  @@map("idempotency_status")
+}
+
+/// One claimed idempotency key, and — once the request finishes — the answer it
+/// earned.
+///
+/// The promise is narrow and worth stating exactly: a caller who supplies
+/// `Idempotency-Key` on a side-effecting POST may retry it freely, and the
+/// effect happens at most once. Not *exactly* once — a request that never
+/// arrives never happens — and the header is optional, so a caller who sends no
+/// key gets today's behaviour rather than a rejection. Idempotency is something
+/// a client opts into per request, because only the client knows whether it is
+/// retrying.
+///
+/// Scoped by `(tenantId, scope, key)` rather than by route alone, and `scope` is
+/// the dimension that lets a second, non-HTTP consumer share this table: inbound
+/// Slack events dedupe on `scope = 'slack:event'` and the delivered `event_id`,
+/// which is the same question — "have I already handled this exact thing?" —
+/// asked by something that has no request line and no response to cache. Which is
+/// why `responseCode` and `responseBody` are nullable for a reason beyond the
+/// in-flight window: an event-dedupe consumer completes a record with no response
+/// at all, because there is nobody to answer.
+model IdempotencyRecord {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @default(dbgenerated("NULLIF(current_setting('app.current_tenant', true), '')::uuid")) @map("tenant_id") @db.Uuid
+
+  /// What kind of thing is being deduplicated, and for whom.
+  ///
+  /// For an API caller it is the principal reference and the request line
+  /// together (`c:<id>|POST /tickets`); for an event consumer it is a name the
+  /// adapter chooses (`slack:event`). Free text, because nothing branches on it —
+  /// it partitions the key space, and that partition is doing real work in both
+  /// directions: two consumers cannot collide on a shared key, and neither can
+  /// two principals. The second half is why a Contact cannot read back another
+  /// Contact's cached response by guessing a key; see the RLS commentary in the
+  /// migration for why that lives here rather than in a policy.
+  scope String
+
+  /// The caller's key, verbatim and opaque. Compared, never parsed.
+  key String
+
+  /// A fingerprint of the request this key was first claimed for.
+  ///
+  /// The column that turns a key collision from a silent corruption into a 422.
+  /// A caller reusing a key against a different payload has a bug, and the worst
+  /// possible response is the *other* request's cached success — it would report
+  /// that an operation succeeded which was never even attempted.
+  requestHash String @map("request_hash")
+
+  status IdempotencyStatus @default(in_progress)
+
+  /// Null while in flight, and that is what a concurrent duplicate is answered
+  /// from: there is no result yet, so the honest answer is 409 rather than a
+  /// guess.
+  responseCode Int?  @map("response_code")
+  responseBody Json? @map("response_body") @db.JsonB
+
+  /// Who claimed the key, as attribution rather than as enforcement — the
+  /// principal is already inside `scope`, which is what keeps two callers apart.
+  /// These columns exist so an operator reading the table can see whose retry a
+  /// record belongs to without parsing a composite string.
+  actorKind ActorKind @default(dbgenerated("current_actor_kind()")) @map("actor_kind")
+  actorId   String?   @default(dbgenerated("current_actor_id()")) @map("actor_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  /// When this key stops being honoured, stamped at insert from
+  /// `idempotency_retention()` rather than computed by the sweep. Retention is
+  /// then a property of the row: changing the window later cannot retroactively
+  /// expire keys already issued under the old one.
+  expiresAt DateTime @default(dbgenerated("CURRENT_TIMESTAMP + idempotency_retention()")) @map("expires_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scope, key])
+  @@index([expiresAt])
+  @@map("idempotency_record")
 }

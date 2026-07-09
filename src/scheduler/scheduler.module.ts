@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { IdempotencyRetentionSweep } from '../idempotency/idempotency-retention.sweep';
+import { IdempotencyModule } from '../idempotency/idempotency.module';
 import { DwellSweep } from '../sla/dwell.sweep';
 import { SlaBreachSweep } from '../sla/sla-breach.sweep';
 import { SlaModule } from '../sla/sla.module';
@@ -28,7 +30,7 @@ import { SWEEPS, SweeperService } from './sweeper.service';
  * the Slack adapter lands.
  */
 @Module({
-  imports: [SlaModule],
+  imports: [SlaModule, IdempotencyModule],
   providers: [
     { provide: JOB_HANDLERS, useValue: EMPTY_REGISTRY },
     {
@@ -37,12 +39,19 @@ import { SWEEPS, SweeperService } from './sweeper.service';
       // dwell timers move any of them. The reverse would let a Ticket be
       // resolved by dwell in the same tick that its resolution clock ran out,
       // and whether it breached would depend on which sweep went first.
+      //
+      // Idempotency retention goes last and could go anywhere: it is pure
+      // housekeeping over a table the other two never read, so nothing it does
+      // can change what they see. That independence is worth noting rather than
+      // relying on silently — the first sweep whose order *does* matter should
+      // have to argue for its position.
       provide: SWEEPS,
-      useFactory: (breach: SlaBreachSweep, dwell: DwellSweep) => [
-        breach,
-        dwell,
-      ],
-      inject: [SlaBreachSweep, DwellSweep],
+      useFactory: (
+        breach: SlaBreachSweep,
+        dwell: DwellSweep,
+        retention: IdempotencyRetentionSweep,
+      ) => [breach, dwell, retention],
+      inject: [SlaBreachSweep, DwellSweep, IdempotencyRetentionSweep],
     },
     JobQueueService,
     DrainerService,

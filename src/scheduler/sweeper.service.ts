@@ -28,11 +28,11 @@ export interface Sweep {
 /**
  * The injection token for the registered sweeps.
  *
- * Two sweeps carrying three time-driven effects: the SLA breach latch, and the
- * two 7-day dwell transitions, which share one scan because they are the same
- * question asked of two states. They arrived as registrations against this token
- * and changed nothing in the tick above — which is what the runtime landing
- * first, before there was anything for it to do, was for.
+ * Three sweeps: the SLA breach latch; the two 7-day dwell transitions, which
+ * share one scan because they are the same question asked of two states; and
+ * idempotency retention. Each arrived as a registration against this token and
+ * changed nothing in the tick above — which is what the runtime landing first,
+ * before there was anything for it to do, was for.
  */
 export const SWEEPS = 'SWEEPS';
 

@@ -16,6 +16,7 @@ The support API for Nivara Desk — a multitenant, two-sided customer-support he
 - **Pagination** — cursor/keyset, never offset. \`limit\` defaults to 25 and caps at 100. There is no \`total\`. Default order is newest-first. The cursor is opaque — pass it back unmodified.
 - **Errors** — always \`{ error: { code, message, details? } }\`. Branch on \`code\`, drawn from the closed catalog at \`GET /meta/error-codes\`. \`details\` appears only on 422.
 - **Authority** — an operation that needs a named permission carries it as \`x-required-permission\`, derived from the guard that enforces it rather than written by hand. The same vocabulary is the scope namespace for service tokens: there is one set of permission names, not two.
+- **Safe retries** — any authenticated \`POST\` accepts an optional \`Idempotency-Key\` header. Send one and the effect happens at most once however many times you retry: a completed request replays its original status and body verbatim, marked \`Idempotency-Replayed: true\`. A duplicate arriving while the original is still running answers \`409 idempotency_in_flight\` and is safe to retry; the same key sent with a different body answers \`422 idempotency_key_reused\`. Keys are honoured for 24 hours, scoped per caller and per request. Omitting the header is not an error — it simply carries no guarantee.
 - **Unknown query parameters are rejected with 400**, never silently ignored.
 - **404, never 403, for records you cannot see** — a record belonging to another tenant is indistinguishable from one that does not exist.
 `.trim();

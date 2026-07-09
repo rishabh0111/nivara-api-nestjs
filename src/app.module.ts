@@ -5,6 +5,7 @@ import { GLOBAL_PROVIDERS } from './common/global-providers';
 import { ConversationModule } from './conversation/conversation.module';
 import { AppConfigModule } from './config/app-config.module';
 import { HealthModule } from './health/health.module';
+import { IdempotencyModule } from './idempotency/idempotency.module';
 import { MetaModule } from './meta/meta.module';
 import { PortalModule } from './portal/portal.module';
 import { RealtimeModule } from './realtime/realtime.module';
@@ -19,6 +20,7 @@ import { WidgetModule } from './widget/widget.module';
   imports: [
     AppConfigModule,
     TenancyModule,
+    IdempotencyModule,
     AuthModule,
     StaffModule,
     TicketsModule,
