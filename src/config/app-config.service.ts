@@ -53,6 +53,37 @@ export class AppConfigService {
     return this.get('WIDGET_SESSION_SECRET');
   }
 
+  /**
+   * Verifies inbound Slack requests. `undefined` when Slack is dormant.
+   *
+   * One secret for the whole app rather than one per tenant, because there is one
+   * distributed Slack app: the signature proves the request came from Slack, and
+   * *which tenant it belongs to* is a separate question answered afterwards by
+   * the installation record. Conflating the two would mean knowing the tenant
+   * before the request was trusted, which is the wrong way round.
+   */
+  get slackSigningSecret(): string | undefined {
+    return this.get('SLACK_SIGNING_SECRET');
+  }
+
+  /**
+   * Authenticates this system's postings back into Slack. `undefined` when Slack
+   * is dormant.
+   *
+   * In configuration rather than on the installation row, and that is a decision
+   * with a reason rather than a convenience: resolving a workspace happens before
+   * any tenant is known, so it runs under a cross-tenant lookup context — and
+   * granting that over a table holding credentials is a much larger thing than
+   * granting it over a routing table. The migration makes the argument in full.
+   *
+   * The seam it leaves open is per-workspace tokens, which is what the OAuth
+   * install flow produces. It lands as a second table read under the tenant the
+   * installation resolved, and this accessor becomes the fallback.
+   */
+  get slackBotToken(): string | undefined {
+    return this.get('SLACK_BOT_TOKEN');
+  }
+
   get isProduction(): boolean {
     return this.nodeEnv === 'production';
   }

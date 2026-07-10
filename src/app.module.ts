@@ -7,7 +7,9 @@ import { AppConfigModule } from './config/app-config.module';
 import { HealthModule } from './health/health.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
 import { MetaModule } from './meta/meta.module';
+import { OutboundModule } from './outbound/outbound.module';
 import { PortalModule } from './portal/portal.module';
+import { SlackModule } from './slack/slack.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { ServiceTokensModule } from './service-tokens/service-tokens.module';
@@ -29,6 +31,8 @@ import { WidgetModule } from './widget/widget.module';
     WidgetModule,
     RealtimeModule,
     ServiceTokensModule,
+    OutboundModule,
+    SlackModule,
     SchedulerModule,
     AuditModule,
     HealthModule,

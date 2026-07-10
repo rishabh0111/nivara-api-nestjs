@@ -4,35 +4,67 @@ import { IdempotencyModule } from '../idempotency/idempotency.module';
 import { DwellSweep } from '../sla/dwell.sweep';
 import { SlaBreachSweep } from '../sla/sla-breach.sweep';
 import { SlaModule } from '../sla/sla.module';
+import {
+  INBOUND_EVENT_JOB,
+  OUTBOUND_DELIVERY_JOB,
+} from '../integrations/job-kinds';
+import { SlackDeliveryService } from '../slack/slack-delivery.service';
+import { SlackIngestionService } from '../slack/slack-ingestion.service';
+import { SlackModule } from '../slack/slack.module';
 import { DrainerService } from './drainer.service';
-import { EMPTY_REGISTRY, JOB_HANDLERS } from './job-handler';
-import { JobQueueService } from './job-queue.service';
+import { JOB_HANDLERS, JobHandlerRegistry } from './job-handler';
+import { JobQueueModule } from './job-queue.module';
+
 import { SchedulerHeartbeat } from './scheduler-heartbeat';
 import { SchedulerTicker } from './scheduler-ticker.service';
 import { SWEEPS, SweeperService } from './sweeper.service';
 
 /**
- * The queue, the two ticks, and the clock that drives them.
+ * The two ticks, the clock that drives them, and what they run.
  *
- * Three things leave this module, and the omissions are the design. `JobQueue`
- * is exported because features enqueue work; the two tick services are exported
- * because tests drive them directly, and because a future admin surface may want
- * to run one on demand. `SchedulerTicker` is exported nowhere — nothing should
- * be able to start, stop, or reach past the clock, which is the piece each port
- * replaces.
+ * The queue itself moved out to `JobQueueModule` when the Slack adapter arrived —
+ * see there for why, but the short version is that this module had grown two jobs
+ * and only one of them belonged in a cycle. Features enqueue against that module;
+ * `JobQueueService` is re-exported here so nothing that imported it had to move.
+ *
+ * The two tick services are exported because tests drive them directly, and
+ * because a future admin surface may want to run one on demand. `SchedulerTicker`
+ * is exported nowhere — nothing should be able to start, stop, or reach past the
+ * clock, which is the piece each port replaces.
  *
  * The heartbeat is exported for readiness alone. It is a fact this process holds
  * about itself, and the health surface is the only legitimate reader.
  *
- * Both registries are provided by token, and the seam paid off as intended: the
- * SLA work arrived as the two registrations below and changed not one line of
- * the tick. The job-handler registry is still empty and fills the same way when
- * the Slack adapter lands.
+ * Both registries are provided by token, and the seam has now paid off twice. The
+ * SLA work arrived as two sweep registrations and changed not one line of the
+ * tick; the Slack adapter arrived as two handler registrations and changed not
+ * one line of the drainer. Neither the claim nor the settle knows that either
+ * exists.
  */
 @Module({
-  imports: [SlaModule, IdempotencyModule],
+  imports: [SlaModule, IdempotencyModule, SlackModule, JobQueueModule],
   providers: [
-    { provide: JOB_HANDLERS, useValue: EMPTY_REGISTRY },
+    {
+      // The registry filling exactly as the seam predicted: two entries, and not
+      // one line of the drainer, the claim or the tick changed to accept them.
+      // `EMPTY_REGISTRY` stays exported for the ports and for tests that want a
+      // runtime with nothing registered.
+      //
+      // Both kinds come from the Slack adapter today and neither is named after
+      // it, which is the shape to keep: `inbound.event` and `outbound.delivery`
+      // are what *every* source adapter produces, so a second one registers
+      // alongside these rather than inventing a third and fourth kind.
+      provide: JOB_HANDLERS,
+      useFactory: (
+        ingestion: SlackIngestionService,
+        delivery: SlackDeliveryService,
+      ): JobHandlerRegistry =>
+        Object.freeze({
+          [INBOUND_EVENT_JOB]: ingestion.handle,
+          [OUTBOUND_DELIVERY_JOB]: delivery.handle,
+        }),
+      inject: [SlackIngestionService, SlackDeliveryService],
+    },
     {
       // Order is the order they run in, and it is the order that reads right:
       // breaches are latched against the states Tickets are in now, before the
@@ -53,14 +85,18 @@ import { SWEEPS, SweeperService } from './sweeper.service';
       ) => [breach, dwell, retention],
       inject: [SlaBreachSweep, DwellSweep, IdempotencyRetentionSweep],
     },
-    JobQueueService,
     DrainerService,
     SweeperService,
     SchedulerHeartbeat,
     SchedulerTicker,
   ],
   exports: [
-    JobQueueService,
+    // The *module*, not the provider. `JobQueueService` is no longer one of this
+    // module's own providers, so re-exporting it by name is not something Nest
+    // can honour — exporting the module it does belong to is, and it keeps the
+    // promise that nothing which imported `SchedulerModule` for the queue had to
+    // move when the two were separated.
+    JobQueueModule,
     DrainerService,
     SweeperService,
     SchedulerHeartbeat,

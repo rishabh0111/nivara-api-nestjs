@@ -52,6 +52,19 @@ export interface CreateTicketInput {
    * that could compute it wrongly. A caller names the fact it knows.
    */
   spawnedFromTicketId?: string;
+
+  /**
+   * Where this conversation is reachable outside Nivara, when it arrived from
+   * somewhere that has such a place.
+   *
+   * Only an *origin* Ticket may name one, and only the adapter that read it off a
+   * verified event ever does. A spawn inherits its parent's route from the
+   * database — see `ticket_enforce_linkage()` — so the reply path never supplies
+   * this and could not get it wrong if it tried: a value passed alongside
+   * `spawnedFromTicketId` is overwritten by the trigger, exactly as a supplied
+   * root is.
+   */
+  slackRoute?: { channelId: string; threadTs: string };
 }
 
 export interface ListTicketsInput extends TicketFilters {
@@ -152,6 +165,12 @@ export class TicketService {
           // denormalized column cannot disagree with the ancestry it
           // summarizes — in this port or in any other.
           spawnedFromTicketId: input.spawnedFromTicketId ?? null,
+          // Null together or set together — the `ticket_slack_route_is_whole`
+          // check refuses a half-route, because a channel with no thread would
+          // deliver replies into a channel's top level rather than to the person
+          // who asked.
+          slackChannelId: input.slackRoute?.channelId ?? null,
+          slackThreadTs: input.slackRoute?.threadTs ?? null,
         },
       })
       .catch((error: unknown) => {
@@ -516,6 +535,11 @@ const TICKET_REFUSALS = {
     code: 'conflict',
     message:
       'A conversation\u2019s ancestry is set when a Ticket is created and cannot be rewritten.',
+  },
+  TK005: {
+    code: 'conflict',
+    message:
+      'A Ticket is reachable where its conversation started. Re-pointing a live conversation at another thread is not an edit; it is a new Ticket.',
   },
 } as const satisfies Record<string, { code: ErrorCode; message: string }>;
 

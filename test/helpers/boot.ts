@@ -26,7 +26,10 @@ export const bootApp = async (
     imports: [AppModule],
   }).compile();
 
-  const app = moduleRef.createNestApplication();
+  // `rawBody` exactly as `main.ts` sets it. Without it the Slack ingestion tests
+  // would exercise a signature check against an empty body and pass or fail for
+  // reasons having nothing to do with the code under test.
+  const app = moduleRef.createNestApplication({ rawBody: true });
 
   // Swagger mounts its routes on the adapter, so it has to run before the
   // server starts listening — the same ordering `main.ts` uses.
@@ -60,7 +63,7 @@ export const bootAppUnderCurrentEnv = async (): Promise<INestApplication> => {
     imports: [FreshAppModule],
   }).compile();
 
-  const app = moduleRef.createNestApplication();
+  const app = moduleRef.createNestApplication({ rawBody: true });
   await app.listen(0);
 
   return app;

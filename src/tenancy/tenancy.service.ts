@@ -123,6 +123,47 @@ export class TenancyService {
   }
 
   /**
+   * Runs `work` with the *installation lookup* context armed — the third and
+   * last context in this application that is not scoped to a tenant.
+   *
+   * It exists for a chicken-and-egg that only an inbound integration has. Every
+   * other entry point learns its tenant from a credential the caller presented;
+   * a Slack event arrives bearing a workspace id, and the mapping from that
+   * workspace to a tenant is itself a row in the database. So the read that
+   * establishes the tenant cannot run under the tenant, and `withTenant()` is
+   * the wrong shape for the same reason it is wrong for the drainer.
+   *
+   * What it is not, on the same three terms `withScheduler()` sets out: the
+   * setting it arms is named by exactly one policy, on `slack_installation`, and
+   * that policy is `FOR SELECT` alone. A transaction opened here can read which
+   * workspaces are installed and can do nothing else — no ticket, no contact, no
+   * write, in any tenant. That the table deliberately holds no credential is the
+   * third bound, and it is why the bot token lives in configuration rather than
+   * on the row; see the migration. `slack.int-spec.ts` asserts all of it,
+   * including the `pg_policies` scan that catches a second table growing the
+   * same clause.
+   *
+   * `app.current_tenant` is armed to the empty string rather than left unset, so
+   * this transaction cannot inherit a value from anywhere — the same care
+   * `withScheduler()` takes and for the same reason.
+   */
+  async withInstallationLookup<T>(
+    work: (tx: TenantClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT
+          set_config('app.current_tenant', '', true),
+          set_config('app.current_actor_kind', 'system', true),
+          set_config('app.current_actor_id', '', true),
+          set_config('app.installations', 'on', true)
+      `;
+
+      return work(tx);
+    });
+  }
+
+  /**
    * Lists every tenant the sweeps have to visit.
    *
    * The one question a sweep cannot ask from inside a tenant context, and

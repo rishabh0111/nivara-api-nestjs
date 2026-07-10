@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { RequestPrincipal, tenantContextFor } from '../auth/request-principal';
 import { buildPage, Page } from '../common/pagination/page';
 import { Message } from '../generated/prisma/client';
+import { OutboundDispatchService } from '../outbound/outbound-dispatch.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { TenancyService, TenantClient } from '../tenancy/tenancy.service';
 import {
@@ -30,6 +31,7 @@ export class MessageService {
   constructor(
     private readonly tenancy: TenancyService,
     private readonly realtime: RealtimeService,
+    private readonly outbound: OutboundDispatchService,
   ) {}
 
   /**
@@ -106,9 +108,29 @@ export class MessageService {
   ): Promise<Message> {
     await assertTicketVisible(tx, ticketId);
 
-    return tx.message
+    const message = await tx.message
       .create({ data: { tenantId: principal.tenantId, ticketId, body } })
       .catch(rethrowMissingTicket);
+
+    // The one line that connects the conversation to the outside world, and it
+    // is here — in the single method every Message in this system is written by —
+    // rather than at each surface that posts one. A reply typed by an agent, one
+    // written by the AI layer, and one that arrives on a spawned Ticket through
+    // the reply path all reach the customer's channel by the same route, because
+    // they all reach it through this statement.
+    //
+    // Inside the transaction, so the Message and the promise to deliver it commit
+    // together: a Message that committed with nothing scheduled is a reply that
+    // silently never leaves, and a scheduled delivery for a Message that rolled
+    // back is a handler that cannot find its own subject.
+    //
+    // Whether anything is actually queued is not this file's business, and
+    // deliberately so — `OutboundDispatchService` answers it from the Ticket's own
+    // columns, so `MessageService` stays innocent of Slack, of channels, and of
+    // the fact that a customer's own words must never be posted back at them.
+    await this.outbound.dispatchIn(tx, message);
+
+    return message;
   }
 
   /** A page of one Ticket's Messages — and only Messages. */

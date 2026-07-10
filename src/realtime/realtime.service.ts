@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Message, Note, Ticket } from '../generated/prisma/client';
 import { EventLog } from './event-log';
 import {
+  IntegrationFailureSnapshot,
   RealtimeEvent,
   RealtimePayloads,
   SlaBreachSnapshot,
@@ -15,7 +16,7 @@ import { agentsRoom, internalRoom, ticketRoom } from './rooms';
  * What the rest of the application announces through, and the only thing it
  * sees of the socket.
  *
- * Five methods named after the five events, taking domain rows and nothing else.
+ * One method per event, taking domain rows and nothing else.
  * A caller does not choose a room, does not build an envelope, and does not
  * decide an audience — which is what keeps the routing rules in one file where
  * they can be read against the contract document, rather than scattered across
@@ -140,6 +141,32 @@ export class RealtimeService {
     breach: SlaBreachSnapshot,
   ): Promise<void> {
     await this.publish(agentsRoom(tenantId), 'ticket.sla.breached', breach);
+  }
+
+  /**
+   * A reply that never reached the customer, to the dashboard.
+   *
+   * The agents room only, like the breach above and for a sharper version of the
+   * same reason: the person who needs this is the one who typed the reply and
+   * believes it was delivered. A customer being told that an answer they never
+   * saw exists somewhere would be worse than the silence they are already
+   * experiencing.
+   *
+   * The whole of what a permanent delivery failure does, together with the audit
+   * row written beside it. The Ticket is untouched — **notify, don't mutate** —
+   * because an integration giving up is not a fact about the support work, and
+   * letting an outage reopen or flag Tickets would let a broken adapter rewrite a
+   * tenant's queue.
+   */
+  async integrationFailed(
+    tenantId: string,
+    failure: IntegrationFailureSnapshot,
+  ): Promise<void> {
+    await this.publish(
+      agentsRoom(tenantId),
+      'ticket.integration.failed',
+      failure,
+    );
   }
 
   private async publish<E extends RealtimeEvent>(

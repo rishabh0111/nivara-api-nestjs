@@ -204,9 +204,35 @@ Deliberately not a snapshot: the other ticket events announce that a Ticket chan
 
 Emitted **once per timer for the life of the Ticket**. Fire-once rests on a set-once `IS NULL` latch column in Postgres, so it holds across repeated sweeps, a restart, and two schedulers running at once. Escalation is **notify, don't mutate** — no `ticket.updated` accompanies it, because the breach changes neither priority nor assignee.
 
+### `ticket.integration.failed`
+
+`data` names the reply that did not arrive, and — like a breach — is deliberately not a Ticket snapshot:
+
+```ts
+{
+  ticketId: string;
+  messageId: string;
+  source: string;   // the adapter that gave up; `slack` today
+  target: string;   // where it was trying to reach, as that adapter spells one
+  error: string;    // the far end's own words
+}
+```
+
+| Event | Room | Audience |
+| --- | --- | --- |
+| `ticket.integration.failed` | `:agents` | **staff only** |
+
+Emitted when delivery of a customer-visible Message to the channel a Ticket arrived on is **permanently abandoned** — the retries are exhausted, or the far end reported something no amount of waiting will fix.
+
+Not a snapshot, for the same reason a breach is not: nothing about the Ticket changed. **Notify, don't mutate** — the Ticket is not reopened, escalated, or flagged, because an integration outage must not be able to rewrite a tenant's queue. No `ticket.updated` accompanies it.
+
+Staff-only, and this one plainly: the person who needs it is the agent who typed the reply and believes it was delivered. The Message is sitting in the thread, the Ticket looks answered, and the customer is still waiting. Telling the customer instead would be worse than the silence — they can do nothing with it.
+
+`error` is carried rather than left to the log because the remedies differ and an agent can act on some of them: a channel not found means the bot was removed, a rate limit means try later, an auth failure means an admin has work to do. The durable record is the `dead` delivery row; this event is the tap on the shoulder.
+
 ### Reserved
 
-`ticket.integration.failed` (ticket 17) arrives on this same envelope. Typing and presence indicators are **out of scope** and deliberately absent; the envelope is forward-compatible, so adding them later is additive.
+Typing and presence indicators are **out of scope** and deliberately absent; the envelope is forward-compatible, so adding them later is additive.
 
 ---
 

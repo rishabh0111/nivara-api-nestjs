@@ -53,6 +53,9 @@ model Tenant {
   jobs           Job[]
   slaTargets     SlaTarget[]
   idempotency    IdempotencyRecord[]
+  slackInstalls  SlackInstallation[]
+  slackCreds     SlackCredential[]
+  deliveries     OutboundDelivery[]
 
   @@map("tenant")
 }
@@ -362,6 +365,8 @@ model User {
   /// ServiceTokens this User minted. The provenance answer to "who gave the AI
   /// layer this authority", which is why the column is not nullable.
   tokensMinted    ServiceToken[]    @relation("MintingUser")
+  /// Slack installs this User authorized. Provenance, like `tokensMinted`.
+  slackInstalls   SlackCredential[] @relation("SlackInstaller")
 
   // The login lookup key. Uniqueness is per tenant, never global.
   @@unique([tenantId, email])
@@ -510,6 +515,22 @@ model Contact {
   /// because everything downstream reads the principal rather than the credential.
   passwordHash String? @map("password_hash")
 
+  /// The Slack account this Contact speaks from, when the conversation arrived
+  /// that way.
+  ///
+  /// The upsert key for inbound ingestion — `(tenantId, slackUserId)` — which is
+  /// what makes one person's Slack messages accumulate on one Contact instead of
+  /// spawning a stranger per message. Unique per tenant rather than globally: a
+  /// Slack account that raises support with two tenants is two Contacts, exactly
+  /// as the same human working for two tenants is two Users (ADR-0001).
+  ///
+  /// A Contact created this way stays `verified = false`. Slack asserts the
+  /// identity and we did not, which is the same claim the widget path makes about
+  /// an anonymous visitor — and it is why no email is captured here even though
+  /// Slack could be asked for one. Matching Contacts by email across channels
+  /// would quietly resolve the identity-merge seam ADR-0001 leaves open.
+  slackUserId String? @map("slack_user_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -532,6 +553,10 @@ model Contact {
   @@unique([tenantId, email])
   // The composite foreign-key target. See `Ticket.contact`.
   @@unique([tenantId, id])
+  // The inbound ingestion upsert key. NULLs are distinct in Postgres, so this
+  // constrains Slack-linked Contacts without collapsing the many that have no
+  // Slack identity at all.
+  @@unique([tenantId, slackUserId])
   @@map("contact")
 }
 
@@ -624,6 +649,25 @@ model Ticket {
   /// CTE is exactly the database-specific cleverness the three ports would each
   /// have to reimplement.
   rootTicketId String? @map("root_ticket_id") @db.Uuid
+
+  /// Where this conversation is reachable outside Nivara, and null when it is
+  /// not. Both columns are null together, enforced by a check constraint.
+  ///
+  /// On the Ticket rather than on each Message, because it is a property of the
+  /// conversation: every customer-visible Message here goes back to the same
+  /// Slack thread, and a copy per Message would be one fact written many times
+  /// with the ability to disagree.
+  ///
+  /// Set at INSERT and immutable thereafter, like linkage and by a sharper
+  /// argument: editing the route would redirect every future reply on a live
+  /// conversation into a thread the customer is not reading, and the replies
+  /// would still look delivered. On a spawn it is *inherited from the parent* by
+  /// the same trigger that derives `rootTicketId` — a reply that opens a new
+  /// Ticket is still the same person in the same thread, and deriving it in the
+  /// database is what makes it impossible for a call site to spawn a Ticket that
+  /// is silently unreachable.
+  slackChannelId String? @map("slack_channel_id")
+  slackThreadTs  String? @map("slack_thread_ts")
 
   /// When an agent or the AI layer first said something the Contact can see.
   ///
@@ -723,6 +767,12 @@ model Ticket {
   @@index([tenantId, state, createdAt(sort: Desc)])
   @@index([tenantId, assigneeId, createdAt(sort: Desc)])
   @@index([tenantId, contactId])
+  // Not expressible here, and stated in the migration instead: a unique partial
+  // index on `(tenantId, slackChannelId, slackThreadTs) WHERE state <> 'closed'`
+  // — `ticket_one_live_per_slack_thread`, which is `ticket_one_live_per_chain`
+  // seen from the other direction. Since a spawn inherits its parent's route, a
+  // Slack thread has at most one live Ticket, so the inbound reply lookup is a
+  // single row rather than a newest-first guess.
   // The conversation read: a chain's descendants by this index, its origin by
   // primary key. Ordered by `createdAt` because that is the order the
   // conversation happened in, which is the only order it reads as a narrative.
@@ -906,10 +956,19 @@ model Message {
   /// once the Ticket is gone.
   ticket Ticket @relation(fields: [tenantId, ticketId], references: [tenantId, id], onDelete: Cascade)
 
+  /// The deliveries of this Message to the places the conversation is reachable.
+  /// Empty for the overwhelming majority — a Ticket that started in the portal
+  /// has nowhere to deliver to.
+  deliveries OutboundDelivery[]
+
   // The only read this table has: one Ticket's thread, keyset-paginated. The
   // `(createdAt, id)` tail is what makes that traversal servable, and a DESC
   // index serves the ascending scan too — Postgres reads it backwards.
   @@index([tenantId, ticketId, createdAt(sort: Desc), id(sort: Desc)])
+  // The composite foreign-key target, added when something first referenced a
+  // Message. Redundant as a uniqueness claim and present only so
+  // `OutboundDelivery` can reference `(tenant_id, id)` per ADR-0002.
+  @@unique([tenantId, id])
   @@map("message")
 }
 
@@ -1044,4 +1103,192 @@ model IdempotencyRecord {
   @@unique([tenantId, scope, key])
   @@index([expiresAt])
   @@map("idempotency_record")
+}
+
+/// Which Tenant a Slack workspace belongs to.
+///
+/// One distributed Slack app with one signing secret, installed per tenant. The
+/// inbound `teamId` — authenticated by the signature check before it is read as
+/// anything at all — selects the tenant through this table. The payload's own
+/// opinion about who it belongs to is never consulted, because a payload cannot
+/// answer a question the signature has not already answered.
+///
+/// **No credential lives here, deliberately** — the bot token is on
+/// `SlackCredential` beside it. Resolving a workspace happens *before* any tenant
+/// is known, so the read runs under a narrow cross-tenant context, and a policy
+/// narrows rows without narrowing columns: a token on this row would be readable
+/// cross-tenant by whatever holds that context. Same argument the `Job.payload`
+/// convention makes — what crosses the boundary is routing information and
+/// nothing a Tenant would mind another seeing.
+model SlackInstallation {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Slack's identifier for the workspace, and the lookup key. Globally unique
+  /// rather than per tenant: a workspace that resolved to two Tenants would make
+  /// the tenant of an inbound event ambiguous, which is the one thing this table
+  /// exists to make certain.
+  teamId String @unique @map("team_id")
+
+  /// Who Slack thinks the bot is. Read to recognise this adapter's own postings
+  /// on the way back in, so a reply it delivered is not ingested as a new
+  /// customer message — without it, reply-back is an echo loop.
+  botUserId String @map("bot_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// The token this workspace's replies are posted with. Optional in the schema
+  /// because a development run may lean on `SLACK_BOT_TOKEN` instead, and because
+  /// the OAuth flow that produces one does not exist yet.
+  credential SlackCredential?
+
+  // The composite foreign-key target `SlackCredential` needs, per ADR-0002.
+  @@unique([tenantId, id])
+  @@map("slack_installation")
+}
+
+/// A workspace's bot token, kept deliberately out of reach of the lookup.
+///
+/// A whole table for one secret, and the split is the point. `SlackInstallation`
+/// is readable under the pre-tenant lookup context; row-level security narrows
+/// rows and cannot narrow columns, so a credential stored there would be exposed
+/// cross-tenant with nothing but a `SELECT` list standing in the way — and this
+/// schema does not rest guarantees on discipline.
+///
+/// Here there is no lookup policy at all, only ordinary tenant isolation, and by
+/// the time the token is wanted the tenant is settled: resolution happened at
+/// ingest, and delivery runs inside `withTenant()` under the tenant that owns the
+/// reply. So no context in this system can read another tenant's bot token.
+///
+/// One per installation, which is what a distributed Slack app produces — each
+/// tenant's install yields its own workspace-scoped token. A single shared token
+/// authenticates against exactly one workspace, so every other tenant's replies
+/// would fail `invalid_auth` and reach nobody.
+model SlackCredential {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  installationId String @unique @map("installation_id") @db.Uuid
+
+  /// Stored rather than hashed, unlike every other secret in this schema, and the
+  /// asymmetry is forced rather than chosen: a refresh token, an invitation and a
+  /// service token are credentials *presented to us*, so a digest is enough to
+  /// recognise one. This is a credential we present to somebody else, and a digest
+  /// cannot be presented.
+  botAccessToken String @map("bot_access_token")
+
+  /// Who authorized the install — provenance for a credential that acts on the
+  /// tenant's behalf, on the terms `ServiceToken.createdById` sets. Nullable only
+  /// because the OAuth flow that would name somebody does not exist yet.
+  installedById String? @map("installed_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Composite per ADR-0002, so a credential cannot be attached to another
+  /// tenant's installation — the one arrangement that would reintroduce exactly
+  /// the cross-tenant exposure this table was split out to prevent.
+  installation SlackInstallation @relation(fields: [tenantId, installationId], references: [tenantId, id], onDelete: Cascade)
+
+  installedBy User? @relation("SlackInstaller", fields: [tenantId, installedById], references: [tenantId, id], onDelete: Restrict)
+
+  // What makes the relation above one-to-one on the defining side. Implied by
+  // the unique `installationId` already — an installation cannot appear twice —
+  // and stated because the composite reference is what Prisma reads.
+  @@unique([tenantId, installationId])
+  @@map("slack_credential")
+}
+
+/// How far along a customer-visible Message is on its way back to the channel
+/// the conversation arrived on.
+///
+/// `dead` is a state here as well as on the `Job` because this table is where an
+/// operator asking "did my reply reach the customer" looks. Answering that from a
+/// queue row would mean joining a job to a Message through a payload.
+enum OutboundDeliveryStatus {
+  pending
+  delivered
+  dead
+
+  @@map("outbound_delivery_status")
+}
+
+/// One customer-visible Message, on its way to one destination.
+///
+/// It is worth being exact about what this is *not*. It is not a retry state
+/// machine: retry, backoff and giving up live on `Job`, which already does them
+/// and does them identically for every kind of externally fallible work. A second
+/// copy here would be two schedules that can disagree about whether a delivery is
+/// still owed.
+///
+/// What this row owns is the half the queue cannot: **at-most-once posting**.
+/// Delivery is at-least-once by construction — a process killed between posting to
+/// Slack and settling its job leaves a lease that expires and is handed out again
+/// — so without a record of what has already gone out, every crash is a
+/// double-post into a customer's thread. The unique index on
+/// `(tenantId, messageId, target)` is that record, and the handler's first act is
+/// to claim it.
+model OutboundDelivery {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  /// Defaulted from the armed context, as on `AuditLog`, `Job` and
+  /// `IdempotencyRecord`: a delivery is always recorded from inside the
+  /// transaction that wrote the Message it delivers.
+  tenantId String @default(dbgenerated("NULLIF(current_setting('app.current_tenant', true), '')::uuid")) @map("tenant_id") @db.Uuid
+
+  /// Which adapter carries it. Text rather than `TicketSource`, for the reason
+  /// `Job.kind` is text — adapters arrive with integrations — and because it is
+  /// the honest type: `portal` and `widget` are places a Ticket starts, not
+  /// places a reply is delivered to, and the enum would admit both.
+  source String
+
+  messageId String @map("message_id") @db.Uuid
+
+  /// Where it goes, serialized by the adapter that understands it
+  /// (`<channel>/<threadTs>` for Slack). Opaque here: this row records that a
+  /// destination was reached and never parses what the destination means.
+  target String
+
+  status OutboundDeliveryStatus @default(pending)
+
+  /// What the far end called it. The only evidence outside Slack that the post
+  /// happened, and what a future edit or delete of a delivered reply would name.
+  externalId String? @map("external_id")
+
+  /// How many times a handler has claimed this delivery, so an operator reading a
+  /// `dead` row can tell a far end that refused once from one that refused five
+  /// times.
+  attempts Int @default(0)
+
+  /// The most recent failure, overwritten each attempt. History belongs to the
+  /// audit trail; a delivery table accumulating it would be a second, worse one.
+  lastError String? @map("last_error")
+
+  /// Set exactly when `status` is `delivered`, enforced by a check constraint. A
+  /// row claiming delivery with no instant to point at is a claim nobody can
+  /// check.
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Composite per ADR-0002, and `Cascade`: a delivery is a fact about a Message
+  /// and has no meaning once the Message is gone.
+  message Message @relation(fields: [tenantId, messageId], references: [tenantId, id], onDelete: Cascade)
+
+  /// Keyed on the target as well as the Message, because delivering one reply to
+  /// two places is a legitimate future and would be wrongly refused by a
+  /// Message-only key. Two attempts at one target are the duplicate; two targets
+  /// are two deliveries.
+  @@unique([tenantId, messageId, target])
+  // The operator read: one tenant's unfinished or failed deliveries, newest first.
+  @@index([tenantId, status, createdAt(sort: Desc)])
+  @@map("outbound_delivery")
 }

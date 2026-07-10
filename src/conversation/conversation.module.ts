@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { OutboundModule } from '../outbound/outbound.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { TicketsModule } from '../tickets/tickets.module';
 import { ContactReplyService } from './contact-reply.service';
@@ -41,12 +42,21 @@ import { NotesController } from './notes.controller';
  * module's own, and inheriting it transitively would make it disappear the day
  * the queue stopped needing it.
  *
- * `ContactReplyService` is exported for the portal, the only surface that can
- * produce a Contact's reply today. The widget and Slack ingestion join it later
- * on exactly the same terms — they differ only in the Source they pass.
+ * `ContactReplyService` is exported for the portal and, since ticket 17, for
+ * Slack ingestion — which joined on exactly the terms predicted, differing only
+ * in the Source it passes. A customer replying in a Slack thread and one replying
+ * in the portal get the same reopen, the same spawn and the same one-live-per-
+ * chain guarantee because they run the same method.
+ *
+ * `OutboundModule` is the edge that arrived with that ticket, and its direction
+ * is the design. Posting a Message now schedules its delivery to wherever the
+ * conversation is reachable — but this module imports the *pipe*, not the Slack
+ * adapter, so nothing here knows what a channel is. The reverse edge, a
+ * conversation service importing an adapter, is what would have made every future
+ * channel an edit to this file.
  */
 @Module({
-  imports: [TicketsModule, RealtimeModule],
+  imports: [TicketsModule, RealtimeModule, OutboundModule],
   controllers: [MessagesController, NotesController],
   providers: [ContactReplyService, MessageService, NoteService],
   exports: [ContactReplyService, MessageService],

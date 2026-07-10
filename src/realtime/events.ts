@@ -13,8 +13,9 @@ import { isStaff, RealtimePrincipal } from './realtime-principal';
  * ticket that introduces the fact being announced, and renaming one is a
  * breaking change. `ticket.sla.breached` arrived that way and cost exactly the
  * three lines the design predicted — this array, a payload, an audience — with
- * the envelope, the rooms, and the sequencing already general over it. Ticket 17
- * adds `ticket.integration.failed` on the same terms.
+ * the envelope, the rooms, and the sequencing already general over it.
+ * `ticket.integration.failed` arrived on exactly those terms and cost exactly
+ * those three lines, which is the second time the prediction held.
  *
  * Typing and presence are deliberately absent, and the envelope is what makes
  * adding them later cheap rather than a version bump.
@@ -26,6 +27,7 @@ export const REALTIME_EVENTS = [
   'message.created',
   'note.created',
   'ticket.sla.breached',
+  'ticket.integration.failed',
 ] as const;
 
 export type RealtimeEvent = (typeof REALTIME_EVENTS)[number];
@@ -104,6 +106,38 @@ export interface SlaBreachSnapshot {
   breachedAt: string;
 }
 
+/**
+ * A reply that did not reach the customer.
+ *
+ * The one event in this catalog that announces a failure of the system rather
+ * than a fact about the domain, and its shape follows from the rule that governs
+ * that: **notify, don't mutate**. Nothing about the Ticket changed — it was not
+ * reopened, not escalated, not flagged — because a delivery giving up is a
+ * problem with an integration and letting it edit support state would mean an
+ * outage rewriting a tenant's queue. So the payload names the Message rather than
+ * carrying a Ticket snapshot: there is no snapshot to send, because nothing moved.
+ *
+ * It is addressed to the agents room, which is the whole point of announcing it.
+ * An agent who typed a reply and watched it post has no other way to learn it
+ * never arrived — the Message is in the thread, the Ticket looks answered, and
+ * the customer is still waiting. The `dead` delivery row is the durable record;
+ * this is the tap on the shoulder.
+ *
+ * `error` is the far end's own words, and it is here rather than only in the log
+ * because the remedies differ and an agent can act on some of them. "Channel not
+ * found" means somebody removed the bot; a rate limit means try later; an auth
+ * failure means an admin has work to do.
+ */
+export interface IntegrationFailureSnapshot {
+  ticketId: string;
+  messageId: string;
+  /** Which adapter gave up — `slack` today. */
+  source: string;
+  /** Where it was trying to reach, as that adapter spells a destination. */
+  target: string;
+  error: string;
+}
+
 /** The payload each event carries, keyed by event name. */
 export interface RealtimePayloads {
   'ticket.created': TicketSnapshot;
@@ -112,6 +146,7 @@ export interface RealtimePayloads {
   'message.created': ThreadEntrySnapshot;
   'note.created': ThreadEntrySnapshot;
   'ticket.sla.breached': SlaBreachSnapshot;
+  'ticket.integration.failed': IntegrationFailureSnapshot;
 }
 
 /**
@@ -172,6 +207,13 @@ const AUDIENCE: Record<RealtimeEvent, Audience> = {
   // rather than the barrier, and it is what makes a future mis-routed emit
   // deliver to nobody instead of telling a customer their ticket was missed.
   'ticket.sla.breached': 'staff',
+  // The third staff-only entry, and the plainest of the three. A Note is
+  // staff-only because of what it contains and a breach because of what it
+  // admits; this one because it is addressed to the person who has to do
+  // something. Telling a customer "we tried to answer you and could not" would
+  // be worse than the silence it describes — they cannot act on it, and it
+  // announces that a reply they never saw exists somewhere.
+  'ticket.integration.failed': 'staff',
 };
 
 export const audienceOf = (event: RealtimeEvent): Audience => AUDIENCE[event];
