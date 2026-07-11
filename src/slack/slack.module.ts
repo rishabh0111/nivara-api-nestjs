@@ -1,7 +1,9 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { ConversationModule } from '../conversation/conversation.module';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
+import { RateLimitModule } from '../rate-limit/rate-limit.module';
+import { SlackRateLimitMiddleware } from '../rate-limit/slack-rate-limit.middleware';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { JobQueueModule } from '../scheduler/job-queue.module';
 import { TicketsModule } from '../tickets/tickets.module';
@@ -54,6 +56,7 @@ import { SlackInstallationService } from './slack-installation.service';
     TicketsModule,
     RealtimeModule,
     AuditModule,
+    RateLimitModule,
   ],
   controllers: [SlackEventsController],
   providers: [
@@ -65,4 +68,23 @@ import { SlackInstallationService } from './slack-installation.service';
   ],
   exports: [SlackDeliveryService, SlackIngestionService],
 })
-export class SlackModule {}
+export class SlackModule implements NestModule {
+  /**
+   * The pre-trust ceiling, mounted on this adapter's route.
+   *
+   * Registered here rather than in `RateLimitModule` because this is the module
+   * that knows which path it is protecting — a limiter module naming
+   * `integrations/slack` would have to know about a feature it otherwise has no
+   * relationship with. It follows the precedent `AuthModule` set with cookie
+   * parsing: a middleware travels with the module whose routes depend on it, so
+   * a test booting the application gets the same protection production does.
+   *
+   * Middleware, so it runs before the guard chain and therefore before the
+   * signature check inside the handler. That ordering is the acceptance
+   * criterion — a flood must be turned away before any HMAC is computed and
+   * before anything is enqueued — and it is why this is not a guard.
+   */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(SlackRateLimitMiddleware).forRoutes(SlackEventsController);
+  }
+}

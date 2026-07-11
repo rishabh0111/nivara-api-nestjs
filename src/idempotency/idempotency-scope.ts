@@ -1,3 +1,4 @@
+import { principalRef } from '../auth/principal-ref';
 import {
   RequestPrincipal,
   systemContextFor,
@@ -30,31 +31,6 @@ export const httpScope = (
   method: string,
   path: string,
 ): string => `${principalRef(principal)}|${method} ${path}`;
-
-/**
- * A stable, server-side reference to whoever is retrying.
- *
- * Prefixed by kind, so a User and a Contact whose ids happened to collide are
- * still two callers. A widget visitor is keyed on the *session* rather than on
- * the Contact behind it, and that is the one genuinely considered choice here:
- * a visitor's first write is what creates their Contact, so the Contact is null
- * on the original request and present on the retry. Keying on it would put the
- * two attempts in different partitions and let the retry open a second Ticket —
- * the exact duplicate this module exists to prevent. The session is the identity
- * that spans both, which is what a widget session is for.
- */
-const principalRef = (principal: RequestPrincipal): string => {
-  switch (principal.kind) {
-    case 'user':
-      return `u:${principal.userId}`;
-    case 'contact':
-      return `c:${principal.contactId}`;
-    case 'widget':
-      return `w:${principal.sessionId}`;
-    case 'service':
-      return `s:${principal.tokenId}`;
-  }
-};
 
 /**
  * The context an idempotency record is written under.

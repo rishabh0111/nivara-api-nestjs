@@ -9,6 +9,8 @@ import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { PermissionGuard } from '../authz/permission.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { ServiceTokenModule } from '../service-tokens/service-token.module';
 import { WidgetSessionModule } from '../widget/widget-session.module';
 
@@ -34,7 +36,16 @@ import { WidgetSessionModule } from '../widget/widget-session.module';
   // `ServiceTokenModule` is the third, on identical terms — the leaf that turns
   // a `nvk_live_` value into a principal, not the controller module that serves
   // the admin surface.
-  imports: [JwtModule.register({}), WidgetSessionModule, ServiceTokenModule],
+  //
+  // `RateLimitModule` is the fourth, and is imported for the guard alone — the
+  // ceiling it enforces has to be registered in the ordered chain below, and
+  // this is the module that owns that ordering.
+  imports: [
+    JwtModule.register({}),
+    WidgetSessionModule,
+    ServiceTokenModule,
+    RateLimitModule,
+  ],
   controllers: [AuthController],
   providers: [
     AuthService,
@@ -42,11 +53,17 @@ import { WidgetSessionModule } from '../widget/widget-session.module';
     RefreshTokenService,
     PasswordService,
     // Order matters and is load-bearing: Nest runs globally-scoped guards in
-    // the order they are provided, and `PermissionGuard` weighs a principal
-    // `AuthGuard` has to have resolved first. Declared adjacently, in one
-    // module, so the ordering is a two-line invariant rather than a property of
-    // how modules happen to be imported.
+    // the order they are provided, and both guards below `AuthGuard` weigh a
+    // principal it has to have resolved first. Declared adjacently, in one
+    // module, so the ordering is a three-line invariant rather than a property
+    // of how modules happen to be imported.
+    //
+    // `RateLimitGuard` sits between the two rather than after both. Refusing an
+    // over-budget caller is the cheaper of the two remaining checks and the one
+    // whose whole purpose is to avoid work, so it should not be queued behind a
+    // permission lookup it may make unnecessary.
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
   ],
   // `PasswordService` travels with the module that defines what a stored

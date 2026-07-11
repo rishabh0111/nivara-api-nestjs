@@ -17,6 +17,13 @@ const booleanish = (fallback: boolean) =>
 const port = z.coerce.number().int().min(1).max(65535);
 
 /**
+ * A per-minute ceiling. Floored at 1 rather than 0, because a limit of zero
+ * refuses every request — a plausible typo whose symptom is a total outage, and
+ * one that should be caught at boot rather than by the first caller.
+ */
+const perMinute = z.coerce.number().int().min(1);
+
+/**
  * Every configuration key the application reads.
  *
  * Two rules hold this together, and both are load-bearing for the promise that
@@ -46,7 +53,22 @@ export const envSchema = z
     // production check below.
     MIGRATE_DATABASE_URL: optionalString,
 
+    // Backs rate limiting, and the cache seam beside it. Optional, and
+    // deliberately so: both consumers fail open, so an absent Redis costs the
+    // API its ceilings rather than its ability to serve — which is what keeps
+    // the credential-free first run working.
     REDIS_URL: optionalString,
+
+    // The three rate-limit ceilings, all per minute. Configurable because the
+    // right numbers are an operational question that will be answered by
+    // watching real traffic, and the defaults are a starting point rather than
+    // a considered limit. Deliberately *not* differentiated per route or per
+    // scope: one uniform ceiling is what ticket 18 asked for, and a
+    // per-endpoint table is speculative until something is actually observed
+    // to need its own.
+    RATE_LIMIT_AUTHENTICATED_PER_MINUTE: perMinute.default(300),
+    RATE_LIMIT_SLACK_IP_PER_MINUTE: perMinute.default(60),
+    RATE_LIMIT_SLACK_GLOBAL_PER_MINUTE: perMinute.default(600),
 
     // Signs staff access tokens. Required as of staff authentication, and
     // floored at 32 bytes: HS256 accepts a key of any length, so a short

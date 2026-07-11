@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RateLimit } from '../rate-limit/fixed-window';
 import { Env } from './env.schema';
 
 /**
@@ -34,6 +35,48 @@ export class AppConfigService {
    */
   get databaseUrl(): string {
     return this.get('DATABASE_URL');
+  }
+
+  /**
+   * The shared Redis connection string. `undefined` when Redis is dormant.
+   *
+   * Its absence is a supported configuration rather than a fault: rate limiting
+   * and the cache seam both fail open, so a process with no Redis serves every
+   * request correctly and simply enforces no ceilings.
+   */
+  get redisUrl(): string | undefined {
+    return this.get('REDIS_URL');
+  }
+
+  /**
+   * The three ceilings, read as one object.
+   *
+   * Together rather than as three accessors, because they are configured,
+   * reasoned about and tuned as a set — and because a call site that wanted one
+   * of them in isolation would be a per-route limit, which ticket 18 explicitly
+   * deferred.
+   *
+   * Windowed at sixty seconds here rather than in the limiter, so the pairing of
+   * a ceiling with the span it is measured over happens once. A limiter handed a
+   * bare number would have to know that the number meant "per minute".
+   */
+  get rateLimits(): {
+    authenticated: RateLimit;
+    slackPerIp: RateLimit;
+    slackGlobal: RateLimit;
+  } {
+    const overAMinute = (limit: number): RateLimit => ({
+      limit,
+      windowSeconds: 60,
+    });
+
+    return {
+      authenticated: overAMinute(
+        this.get('RATE_LIMIT_AUTHENTICATED_PER_MINUTE'),
+      ),
+      slackPerIp: overAMinute(this.get('RATE_LIMIT_SLACK_IP_PER_MINUTE')),
+      slackGlobal: overAMinute(this.get('RATE_LIMIT_SLACK_GLOBAL_PER_MINUTE')),
+    };
   }
 
   /** Signs and verifies staff access tokens. Symmetric — HS256, one process. */

@@ -107,6 +107,10 @@ Every endpoint obeys these, and they ship as reusable primitives rather than per
 
 **Filtering and sorting are per-resource allowlists**, not an open query language. Adding a filter is a deliberate, documented act — that cost is the point.
 
+**Rate limits are per principal**, one uniform ceiling of 300 requests/minute keyed on the server-determined tenant and the caller — so one tenant's traffic can never consume another's budget. Exceeding it returns **429** with code `rate_limited` in the usual envelope, carrying `Retry-After` and `RateLimit-*` headers; back off by the seconds in `Retry-After`. There are deliberately no per-route or per-scope ceilings yet: a table of differentiated limits is easy to add and impossible to remove once clients depend on the differences.
+
+Counters live in Redis and **fail open**. If Redis is unavailable the ceilings stop being enforced and every request is served — a cache outage should cost this API its protection, never its availability.
+
 ## Development
 
 ```bash
@@ -127,3 +131,5 @@ That is why the `*.int-spec.ts` files are in the **default** run rather than beh
 ## Configuration
 
 Entirely environment-driven. [.env.example](.env.example) documents every key; nothing real is committed. Absence of an optional integration is a supported state. Half-configuring one is not — supplying a client id without its secret fails at boot rather than at the first callback.
+
+`REDIS_URL` is optional on the same terms. Everything that uses it fails open, so a process without Redis serves every request correctly and simply enforces no rate limits — which is what keeps the credential-free first run working. The three `RATE_LIMIT_*_PER_MINUTE` ceilings are starting values, tunable per environment.

@@ -138,6 +138,55 @@ describe('validateEnv', () => {
     });
   });
 
+  describe('the rate limits', () => {
+    /**
+     * All three default, so the key-free path boots with real ceilings rather
+     * than with none — a limiter that has to be configured before it protects
+     * anything is a limiter that is off in every environment nobody remembered.
+     */
+    it('defaults to the starting ceilings', () => {
+      const env = validate();
+
+      expect(env.RATE_LIMIT_AUTHENTICATED_PER_MINUTE).toBe(300);
+      expect(env.RATE_LIMIT_SLACK_IP_PER_MINUTE).toBe(60);
+      expect(env.RATE_LIMIT_SLACK_GLOBAL_PER_MINUTE).toBe(600);
+    });
+
+    it('reads an operator override', () => {
+      expect(
+        validate({ RATE_LIMIT_AUTHENTICATED_PER_MINUTE: '25' })
+          .RATE_LIMIT_AUTHENTICATED_PER_MINUTE,
+      ).toBe(25);
+    });
+
+    /**
+     * A ceiling of zero refuses every request. It is a plausible typo whose
+     * symptom is a total outage indistinguishable from the API being down, and
+     * the only place it can be caught cheaply is here.
+     */
+    it('refuses a ceiling of zero, which would refuse everything', () => {
+      expect(() =>
+        validate({ RATE_LIMIT_AUTHENTICATED_PER_MINUTE: '0' }),
+      ).toThrow(/RATE_LIMIT_AUTHENTICATED_PER_MINUTE/);
+    });
+
+    it('refuses a non-integer ceiling', () => {
+      expect(() =>
+        validate({ RATE_LIMIT_SLACK_IP_PER_MINUTE: 'lots' }),
+      ).toThrow(/RATE_LIMIT_SLACK_IP_PER_MINUTE/);
+    });
+
+    /**
+     * Redis is optional and its absence is not a half-configured integration:
+     * both consumers fail open, so a process without it serves every request
+     * and simply enforces nothing.
+     */
+    it('boots with no Redis at all', () => {
+      expect(() => validate({ REDIS_URL: '' })).not.toThrow();
+      expect(validate().REDIS_URL).toBeUndefined();
+    });
+  });
+
   it('names every offending key at once', () => {
     expect(() => validate({ PORT: 'nope', NODE_ENV: 'staging' })).toThrow(
       /PORT[\s\S]*NODE_ENV|NODE_ENV[\s\S]*PORT/,

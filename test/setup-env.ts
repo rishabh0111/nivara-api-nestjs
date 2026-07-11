@@ -45,3 +45,21 @@ process.env['JWT_SECRET'] ??= 'test-only-jwt-secret-at-least-32-chars-long';
  */
 process.env['WIDGET_SESSION_SECRET'] ??=
   'test-only-widget-secret-at-least-32-chars-long';
+
+/**
+ * Redis is removed from the test environment, deliberately and unconditionally
+ * — the one value here that overrides `.env` rather than falling back to it.
+ *
+ * A developer whose `.env` points at a local Redis would otherwise have the
+ * suite enforce real rate limits, and several integration files drive well over
+ * three hundred requests through a single seeded login. They would start
+ * failing with 429s that have nothing to do with what they assert, in a pattern
+ * that depends on how fast the machine is — the worst kind of flake, because it
+ * looks like a bug in the code under test.
+ *
+ * Nothing is lost by removing it. Rate limiting fails open, so every other
+ * suite behaves exactly as it would in production with Redis unreachable, and
+ * `rate-limit.int-spec.ts` — the one file that has anything to say about the
+ * ceilings — injects its own store rather than reading this.
+ */
+delete process.env['REDIS_URL'];
