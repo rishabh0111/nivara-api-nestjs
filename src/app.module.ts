@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
+import { CacheModule } from './cache/cache.module';
 import { GLOBAL_PROVIDERS } from './common/global-providers';
 import { ConversationModule } from './conversation/conversation.module';
 import { AppConfigModule } from './config/app-config.module';
@@ -22,6 +23,7 @@ import { WidgetModule } from './widget/widget.module';
   imports: [
     AppConfigModule,
     TenancyModule,
+    CacheModule,
     IdempotencyModule,
     AuthModule,
     StaffModule,

@@ -9,7 +9,7 @@ import { RequestPrincipal } from '../auth/request-principal';
  * share this Redis instance can be given a prefix that demonstrably does not
  * collide with it.
  */
-const RATE_LIMIT_PREFIX = 'rl';
+export const RATE_LIMIT_PREFIX = 'rl';
 
 /**
  * The counter one authenticated principal is charged against.
