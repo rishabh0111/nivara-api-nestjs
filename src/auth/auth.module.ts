@@ -6,6 +6,7 @@ import { AccessTokenService } from './access-token.service';
 import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
+import { GoogleOidcClient } from './google-client';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { PermissionGuard } from '../authz/permission.guard';
@@ -52,6 +53,9 @@ import { WidgetSessionModule } from '../widget/widget-session.module';
     AccessTokenService,
     RefreshTokenService,
     PasswordService,
+    // The network seam for Google, provided here rather than in a module of its
+    // own: it has exactly one consumer, and it is this module's controller.
+    GoogleOidcClient,
     // Order matters and is load-bearing: Nest runs globally-scoped guards in
     // the order they are provided, and both guards below `AuthGuard` weigh a
     // principal it has to have resolved first. Declared adjacently, in one

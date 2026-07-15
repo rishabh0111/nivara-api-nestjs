@@ -49,6 +49,50 @@ describe('boot tolerance', () => {
     });
   });
 
+  /**
+   * The dormancy half of "feature-gated and dormant when unconfigured", and the
+   * one claim the Google suite's stub could not honestly make — it reports
+   * itself configured by construction, so only the real class booted under a
+   * real absent environment can answer this.
+   *
+   * A distinguishable refusal rather than a 404, deliberately. Whether *this
+   * deployment* configured Google is a fact about the deployment and not about
+   * anybody's account, and a client needs it to decide whether to offer the
+   * button at all. Every refusal after the gate is indistinguishable.
+   */
+  it('leaves Google sign-in dormant, and the password path untouched', async () => {
+    await withEnv(ABSENT, async () => {
+      const app = await bootAppUnderCurrentEnv();
+
+      try {
+        const dormant = await request(app.getHttpServer())
+          .post('/auth/google')
+          .send({
+            tenantId: '019f7b5a-0000-7000-8000-000000000000',
+            code: 'a-code',
+            redirectUri: 'https://app.nivara.example/auth/google/callback',
+          });
+
+        expect(dormant.status).toBe(503);
+        expect(dormant.body.error.code).toBe('integration_dormant');
+
+        // The route being dormant must cost the other one nothing. A bad
+        // password here is a 401 from the password path having run, not a 503.
+        const password = await request(app.getHttpServer())
+          .post('/auth/sign-in')
+          .send({
+            tenantId: '019f7b5a-0000-7000-8000-000000000000',
+            email: 'nobody@meridian.test',
+            password: 'not-the-password',
+          });
+
+        expect(password.status).toBe(401);
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
   it('boots on the database connection string alone', async () => {
     // Everything else absent. This is the key-free path: compose supplies the
     // connection string itself, as a throwaway local default, so a clean clone

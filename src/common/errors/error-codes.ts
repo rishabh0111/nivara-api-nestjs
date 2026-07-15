@@ -85,10 +85,15 @@ export const ERROR_CATALOG = {
       'The per-principal rate limit was exceeded. Retry after the interval given in the `Retry-After` header.',
   },
 
-  // --- Server (500) --------------------------------------------------------
+  // --- Server (500 / 503) --------------------------------------------------
   internal_error: {
     status: HttpStatus.INTERNAL_SERVER_ERROR,
     description: 'An unexpected server error occurred.',
+  },
+  integration_dormant: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description:
+      'An optional integration this operation depends on is not configured in this deployment. Not a fault and not a permission problem: the capability is absent here and no retry will produce it. Optional integrations are dormant when unconfigured rather than fatal, so the rest of the API is unaffected — a client seeing this should hide the affected affordance and use the alternative, such as email-and-password sign-in in place of Google.',
   },
 } as const satisfies Record<
   string,

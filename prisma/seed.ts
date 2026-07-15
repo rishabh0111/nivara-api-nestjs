@@ -31,6 +31,24 @@ import { PrismaClient } from '../src/generated/prisma/client';
  */
 const SEED_PASSWORD = 'nivara-demo-password';
 
+/**
+ * A stand-in for what Google's `sub` claim looks like, seeded on the one person
+ * who exists in both tenants.
+ *
+ * The *data shape* Google sign-in produces, without Google being configured —
+ * which is the only part of that path a key-free run can show. Deliberately the
+ * same value in both tenants, because that is the claim worth making visible: one
+ * Google account, two Users, two rows, and a unique index that is per tenant
+ * rather than global so both may exist. A globally unique index would have made
+ * this seed fail, which is the check being cashed in here.
+ *
+ * Numeric-looking because Google's subjects are. Nothing reads it as a number.
+ */
+const SEED_GOOGLE_SUBJECT = '100000000000000000042';
+
+/** The one address the seed deliberately creates in both tenants. */
+const SHARED_EMAIL = 'dual@example.test';
+
 const SEED = {
   meridian: {
     slug: 'meridian',
@@ -47,7 +65,7 @@ const SEED = {
       // identity (ADR-0001) is only demonstrable if some address actually
       // exists in two tenants: these are two Users, two rows, two passwords,
       // and neither login can reach the other.
-      { email: 'dual@example.test', name: 'Iris Vance', role: 'agent' },
+      { email: SHARED_EMAIL, name: 'Iris Vance', role: 'agent' },
     ],
     contacts: [
       { email: 'jules@example.test', name: 'Jules Ferrand', verified: true },
@@ -67,7 +85,7 @@ const SEED = {
       // The other half of the shared-address pair. `admin` here, `agent` at
       // Meridian — so a login that resolved the wrong row would be visible in
       // the role it handed back, not just in the id.
-      { email: 'dual@example.test', name: 'Iris Vance', role: 'admin' },
+      { email: SHARED_EMAIL, name: 'Iris Vance', role: 'admin' },
     ],
     contacts: [
       { email: 'sam@example.test', name: 'Sam Whitlock', verified: true },
@@ -105,10 +123,18 @@ const seedTenant = async (
       type: argon2.argon2id,
     });
 
+    // A linked Google identity on the shared address alone. Everyone else holds
+    // a password and nothing else, which is the ordinary case and the one the
+    // demo signs in with — the point of seeding one linked User is to show that
+    // the two credentials sit on the *same* row rather than implying that a
+    // Google-linked User is a different kind of User.
+    const googleSubject =
+      user.email === SHARED_EMAIL ? SEED_GOOGLE_SUBJECT : null;
+
     await prisma.user.upsert({
       where: { tenantId_email: { tenantId: tenant.id, email: user.email } },
-      update: { name: user.name, role: user.role, passwordHash },
-      create: { tenantId: tenant.id, ...user, passwordHash },
+      update: { name: user.name, role: user.role, passwordHash, googleSubject },
+      create: { tenantId: tenant.id, ...user, passwordHash, googleSubject },
     });
   }
 

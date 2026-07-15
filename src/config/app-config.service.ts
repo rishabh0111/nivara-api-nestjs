@@ -97,6 +97,29 @@ export class AppConfigService {
   }
 
   /**
+   * Identifies this application to Google. `undefined` when Google is dormant.
+   *
+   * Public by OAuth's own reckoning — it travels in every authorization URL — but
+   * it is not decorative: it is the `aud` an ID token has to carry, which is the
+   * check that stops a token minted for another application being replayed here.
+   */
+  get googleClientId(): string | undefined {
+    return this.get('GOOGLE_CLIENT_ID');
+  }
+
+  /**
+   * Authenticates this application to Google's token endpoint. `undefined` when
+   * Google is dormant.
+   *
+   * Load-bearing beyond authentication: it is what makes the token endpoint's
+   * answer trustworthy on the strength of the channel alone, which is why the
+   * ID token that comes back needs no signature check. See `google-id-token.ts`.
+   */
+  get googleClientSecret(): string | undefined {
+    return this.get('GOOGLE_CLIENT_SECRET');
+  }
+
+  /**
    * Verifies inbound Slack requests. `undefined` when Slack is dormant.
    *
    * One secret for the whole app rather than one per tenant, because there is one

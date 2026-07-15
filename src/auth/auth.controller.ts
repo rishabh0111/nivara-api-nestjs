@@ -25,8 +25,10 @@ import { ApiErrorResponses } from '../common/errors/api-error-responses.decorato
 import { AppException } from '../common/errors/app-exception';
 import { AppConfigService } from '../config/app-config.service';
 import { ACCESS_TOKEN_TTL_SECONDS } from './access-token.service';
-import { AuthService, Session } from './auth.service';
+import { AuthService, Session, refuseAuthentication } from './auth.service';
 import { Public } from './auth.guard';
+import { GoogleOidcClient } from './google-client';
+import { GoogleSignInDto } from './dto/google-sign-in.dto';
 import { PrincipalDto, SessionDto } from './dto/session.dto';
 import { SignInDto } from './dto/sign-in.dto';
 import { Principal } from './principal.decorator';
@@ -47,6 +49,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly config: AppConfigService,
+    private readonly google: GoogleOidcClient,
   ) {}
 
   @Post('sign-in')
@@ -64,6 +67,64 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<SessionDto> {
     const session = await this.auth.signIn(body);
+
+    return this.respondWith(session, response);
+  }
+
+  /**
+   * The same session, reached with a Google account instead of a password.
+   *
+   * Answers the identical body and sets the identical cookie as `sign-in`, and
+   * shares `respondWith` to guarantee it: a second response shape here would be
+   * a second thing every client has to handle, for a difference that exists only
+   * in how the person proved who they were.
+   */
+  @Post('google')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sign in with Google',
+    description:
+      'Exchanges an authorization code for a session. Binds to an existing invite-provisioned User by verified Google email against `(tenantId, email)`; a Google identity with no such User is refused rather than provisioned, because the invite is the only source of membership. Answers `integration_dormant` when this deployment has no Google configuration — check that before offering the affordance.',
+  })
+  @ApiOkResponse({ type: SessionDto })
+  @ApiErrorResponses(
+    'validation_failed',
+    'unauthenticated',
+    'integration_dormant',
+  )
+  async signInWithGoogle(
+    @Body() body: GoogleSignInDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<SessionDto> {
+    // The dormancy gate, and it answers before the tenant is even looked at.
+    // Distinguishable from a refused credential on purpose: whether *this
+    // deployment* configured Google is a deployment fact rather than a fact
+    // about anybody's account, and a client needs it to decide whether to show
+    // the button at all. Every refusal *after* this point is indistinguishable.
+    if (!this.google.isConfigured) {
+      throw new AppException(
+        'integration_dormant',
+        'Google sign-in is not configured in this deployment. Sign in with email and password instead.',
+      );
+    }
+
+    const identity = await this.google.exchange({
+      code: body.code,
+      redirectUri: body.redirectUri,
+      now: new Date(),
+    });
+
+    // Google refused, or answered something that is not an identity. Refused
+    // through the same factory `AuthService` uses, so that "Google would not
+    // vouch for you" and "nobody here invited you" are one indistinguishable
+    // answer rather than two that happen to be spelled alike today.
+    if (!identity) throw refuseAuthentication();
+
+    const session = await this.auth.signInWithGoogle({
+      tenantId: body.tenantId,
+      identity,
+    });
 
     return this.respondWith(session, response);
   }

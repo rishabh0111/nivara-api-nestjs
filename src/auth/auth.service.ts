@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AppException } from '../common/errors/app-exception';
 import { UserRole } from '../generated/prisma/client';
+import { classifyInvitation } from '../staff/invitation-lifecycle';
 import { TenancyService } from '../tenancy/tenancy.service';
 import { AccessTokenService } from './access-token.service';
+import { GoogleIdentity } from './google-id-token';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import {
@@ -32,11 +34,18 @@ export interface Session {
  * The one error every authentication failure becomes.
  *
  * Wrong password, unknown email, an email that exists in another tenant, an
- * invited User with no password set — all of them answer this. Each
- * distinction the response could draw is a fact about who belongs to which
- * tenant, offered to whoever asked without a credential.
+ * invited User with no password set, a Google account nobody invited, a spent
+ * authorization code — all of them answer this. Each distinction the response
+ * could draw is a fact about who belongs to which tenant, offered to whoever
+ * asked without a credential.
+ *
+ * Exported because the Google path refuses one step earlier than this service —
+ * at the exchange, before there is a tenant to look a User up in — and a second
+ * refusal spelled out there would be a side channel separating "Google would not
+ * vouch for you" from "nobody invited you", which is precisely the pair that
+ * must stay indistinguishable.
  */
-const refuse = (): AppException =>
+export const refuseAuthentication = (): AppException =>
   new AppException('unauthenticated', 'Invalid credentials.');
 
 @Injectable()
@@ -87,6 +96,150 @@ export class AuthService {
         );
 
         if (!user || !valid) return null;
+
+        const principal: StaffPrincipal = {
+          kind: 'user',
+          tenantId: input.tenantId,
+          userId: user.id,
+          role: user.role,
+        };
+
+        const refresh = await this.refreshTokens.issue(tx, {
+          tenantId: input.tenantId,
+          subject: { kind: 'user', userId: user.id },
+          now,
+        });
+
+        return { principal, refreshToken: refresh.token };
+      },
+    );
+
+    return this.issueSession(session);
+  }
+
+  /**
+   * Signs a User in against an identity Google has vouched for.
+   *
+   * The same session as the password path — same access token, same rotating
+   * refresh cookie, same `StaffPrincipal` — because Google is an authentication
+   * *method* onto an existing User, not a second identity system. Everything
+   * downstream of this method is unable to tell which credential got the person
+   * here, and that is the point.
+   *
+   * **Nothing here creates a User.** The invite is the single source of truth for
+   * membership, so a verified Google identity with no matching row is refused
+   * exactly as an unknown password would be. Auto-provisioning would mean anyone
+   * with a Google account and a tenant id could join a tenant that never invited
+   * them.
+   *
+   * Two lookups in a deliberate order:
+   *
+   * 1. **By subject**, for a User who has signed in this way before. Google's
+   *    `sub` is stable and never reassigned, so it survives the person changing
+   *    the address on their Google account — which the email lookup would not.
+   * 2. **By email**, for the first time, which is the binding the ticket is
+   *    about. Verified, and against `(tenantId, email)` — so the same person at
+   *    two tenants stays two Users, each of which links separately.
+   *
+   * The link is written on that first success. It is the step that makes 1
+   * possible, and it is why a password User and a Google User are never two rows.
+   *
+   * Two refusals guard the second lookup, because binding by email is the step
+   * that trusts something outside this system:
+   *
+   * - **A row already linked to another Google account** is refused, never
+   *   re-pointed. A verified email proves control of an address today, not
+   *   continuity with whoever held it before.
+   * - **An unusable invitation** is refused, and a live one is *spent*. Signing
+   *   in with Google is how an invited person accepts, so the same verdict the
+   *   acceptance endpoint reaches has to be reached here — otherwise Google
+   *   would be the way around an invitation that expired.
+   */
+  async signInWithGoogle(input: {
+    tenantId: string;
+    identity: GoogleIdentity;
+  }): Promise<Session> {
+    const now = new Date();
+
+    const session = await this.tenancy.withTenant(
+      systemContextFor(input.tenantId),
+      async (tx) => {
+        // Both reads run inside the tenant context, so "no such User" and "a
+        // User at another tenant" are the same answer at the database level
+        // rather than by care taken here.
+        const linked = await tx.user.findFirst({
+          where: { googleSubject: input.identity.subject },
+        });
+
+        const user =
+          linked ??
+          (await tx.user.findFirst({ where: { email: input.identity.email } }));
+
+        if (!user) return null;
+
+        // A User already linked to a *different* Google account, reached by
+        // email. Refused rather than re-pointed, and this is the sharp edge of
+        // the whole binding: a verified email proves the holder controls that
+        // address today, not that they are who held it when the link was made.
+        // Addresses get transferred and Workspace accounts get recreated, so
+        // overwriting here would let a second Google account silently displace
+        // the first on somebody else's staff row. Linking is a one-way step;
+        // undoing it is an administrative act, not a sign-in.
+        if (
+          user.googleSubject &&
+          user.googleSubject !== input.identity.subject
+        ) {
+          this.logger.warn(
+            `Refused a Google sign-in for user ${user.id}: the row is linked to another Google account.`,
+          );
+
+          return null;
+        }
+
+        // Signing in with Google *is* accepting the invitation, which is the
+        // point of the ticket — an invited person should not have to set a
+        // password they will never use in order to use Google. So the same
+        // verdict the acceptance endpoint reaches has to be reached here, or
+        // Google would be a way around an expired invitation: the User row
+        // outlives its invitation, and the password path refuses one only
+        // because there is no hash to compare against.
+        //
+        // A User with no invitation at all is not part of this — the relation is
+        // optional, and a seeded User was provisioned by something that never
+        // issued one.
+        const invitation = await tx.staffInvitation.findFirst({
+          where: { userId: user.id },
+        });
+
+        if (invitation && !invitation.acceptedAt) {
+          if (classifyInvitation(invitation, now).outcome === 'reject') {
+            this.logger.warn(
+              `Refused a Google sign-in for user ${user.id}: the invitation is unusable.`,
+            );
+
+            return null;
+          }
+
+          // Conditional on the invitation still being unspent, exactly as
+          // `InvitationService.accept` is and for the same reason: this is what
+          // makes acceptance single-use, rather than the check above it.
+          const spent = await tx.staffInvitation.updateMany({
+            where: { id: invitation.id, acceptedAt: null },
+            data: { acceptedAt: now },
+          });
+
+          if (spent.count === 0) return null;
+        }
+
+        // Write the link only when it is new. An unconditional update would
+        // touch `updatedAt` on every sign-in, turning a read-shaped operation
+        // into a write that contends with whatever else is editing the row.
+        if (!user.googleSubject) {
+          await tx.user.update({
+            where: { id: user.id },
+            data: { googleSubject: input.identity.subject },
+          });
+        }
 
         const principal: StaffPrincipal = {
           kind: 'user',
@@ -213,7 +366,7 @@ export class AuthService {
   private async issueSession(
     session: { principal: StaffPrincipal; refreshToken: string } | null,
   ): Promise<Session> {
-    if (!session) throw refuse();
+    if (!session) throw refuseAuthentication();
 
     return {
       ...session,

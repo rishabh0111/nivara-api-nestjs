@@ -10,6 +10,17 @@ import { setupOpenApi } from 'src/openapi/document';
 interface BootOptions {
   /** Mount the OpenAPI routes, as `main.ts` does when Swagger is enabled. */
   openApi?: boolean;
+
+  /**
+   * Providers to replace in the real graph, keyed by their class token.
+   *
+   * For network seams and nothing else. The value of these tests is that they
+   * run the real application against a real database, so anything replaced here
+   * is a claim that the thing being replaced sits on the far side of a boundary
+   * this suite cannot own — a third party's HTTP API. Replacing a service to
+   * make an assertion easier would hollow out the suite instead.
+   */
+  overrides?: { provide: Type<unknown>; useValue: unknown }[];
 }
 
 /**
@@ -22,9 +33,13 @@ interface BootOptions {
 export const bootApp = async (
   options: BootOptions = {},
 ): Promise<INestApplication> => {
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+
+  for (const { provide, useValue } of options.overrides ?? []) {
+    builder.overrideProvider(provide).useValue(useValue);
+  }
+
+  const moduleRef = await builder.compile();
 
   // `rawBody` exactly as `main.ts` sets it. Without it the Slack ingestion tests
   // would exercise a signature check against an empty body and pass or fail for

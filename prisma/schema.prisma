@@ -340,17 +340,24 @@ enum UserRole {
 /// person working for two Tenants is two User rows, which is what lets every
 /// table be tenant-scoped with no cross-tenant exception (ADR-0001).
 model User {
-  id           String   @id @default(uuid(7)) @db.Uuid
-  tenantId     String   @map("tenant_id") @db.Uuid
-  email        String
-  name         String
-  role         UserRole @default(agent)
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  email         String
+  name          String
+  role          UserRole @default(agent)
   /// Argon2id. Nullable because membership precedes credentials: an invite
   /// creates the User, and only accepting it sets a password. A User with no
   /// hash cannot sign in — there is nothing to compare against.
-  passwordHash String?  @map("password_hash")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  passwordHash  String?  @map("password_hash")
+  /// Google's `sub` claim — stable for one person at one Google account, and
+  /// never reassigned, which is why it and not the email is what a returning
+  /// sign-in matches on. Nullable beside `passwordHash` for the same reason:
+  /// the two are credentials *on* a User, and a User may hold either, both, or
+  /// neither. Written the first time a verified Google email resolves to this
+  /// row, never supplied by an invite.
+  googleSubject String?  @map("google_subject")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   refreshTokens   RefreshToken[]
@@ -370,6 +377,12 @@ model User {
 
   // The login lookup key. Uniqueness is per tenant, never global.
   @@unique([tenantId, email])
+  // The returning-Google-sign-in lookup key, and per tenant for the same reason
+  // the email is. A Google subject is globally unique to one person, so a global
+  // unique here would read as the truer constraint — and it would forbid the
+  // case the whole identity model is built around: one person working for two
+  // tenants is two Users, each of which may link the same Google account.
+  @@unique([tenantId, googleSubject])
   // Redundant on its own — `id` is already unique — but it is the target a
   // composite foreign key needs. See `Ticket.assignee` for why anything
   // referencing a User references `(tenantId, id)` rather than `id` alone.
