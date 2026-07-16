@@ -1,186 +1,101 @@
 import 'dotenv/config';
-import { PrismaPg } from '@prisma/adapter-pg';
-import * as argon2 from 'argon2';
-import { PrismaClient } from '../src/generated/prisma/client';
+import { mintServiceToken } from '../src/service-tokens/service-token-format';
+import { TENANT_IDS, TICKET_IDS } from './seed/anchors';
+import { prisma, reset } from './seed/database';
+import { meridian } from './seed/meridian';
+import { TenantPlan } from './seed/plan';
+import { sortwood } from './seed/sortwood';
+import { SEED_PASSWORD, writeTenant } from './seed/write';
 
 /**
- * Two tenants, from the first migration onward.
+ * The demo, from a clean clone and with no credentials of any kind.
  *
- * One tenant makes isolation unfalsifiable: every query returns the only rows
- * that exist, and a policy that did nothing at all would look identical to one
- * that worked. Meridian and Sortwood exist so that isolation can be
- * demonstrated rather than asserted — the tests in `test/tenancy.int-spec.ts`
- * ask Meridian's context for Sortwood's rows and get nothing back.
+ * Two tenants: Meridian, which is showcase-rich, and Sortwood, which exists so
+ * that isolation can be checked by hand rather than taken on trust. Each has its
+ * own file; this one runs them and says what it made.
  *
- * Both tenants stay deliberately thin here. The showcase-scale seed — tickets,
- * threads, SLA clocks — belongs to the ticket that introduces those entities.
+ * The whole seed hangs on one instant. Every offset in both plans is expressed
+ * as days before `now`, and `now` is captured once here — so a run that takes
+ * ninety seconds does not produce a queue whose Tickets disagree with each other
+ * about what time it is.
  *
- * This runs as the owner over the direct endpoint, which bypasses row-level
+ * It runs as the owner over the direct endpoint, which bypasses row-level
  * security. That is not a loophole: seeding two tenants is by definition work no
- * single tenant context could do.
+ * single tenant context could do, and resetting the database is work no tenant
+ * context should be able to do at all.
  */
-
-/**
- * One password, shared by every seeded staff member, printed on every run.
- *
- * The key-free demo path is the point: someone evaluating this API can sign in
- * without configuring an OAuth provider. It is safe to commit because it only
- * ever meets seeded `.test` accounts in a throwaway database — and it is long
- * enough to clear the sign-in DTO's twelve-character floor, so the demo
- * credentials are not a special case the validation has to bend for.
- */
-const SEED_PASSWORD = 'nivara-demo-password';
-
-/**
- * A stand-in for what Google's `sub` claim looks like, seeded on the one person
- * who exists in both tenants.
- *
- * The *data shape* Google sign-in produces, without Google being configured —
- * which is the only part of that path a key-free run can show. Deliberately the
- * same value in both tenants, because that is the claim worth making visible: one
- * Google account, two Users, two rows, and a unique index that is per tenant
- * rather than global so both may exist. A globally unique index would have made
- * this seed fail, which is the check being cashed in here.
- *
- * Numeric-looking because Google's subjects are. Nothing reads it as a number.
- */
-const SEED_GOOGLE_SUBJECT = '100000000000000000042';
-
-/** The one address the seed deliberately creates in both tenants. */
-const SHARED_EMAIL = 'dual@example.test';
-
-const SEED = {
-  meridian: {
-    slug: 'meridian',
-    name: 'Meridian',
-    // The widget is on for this tenant, so the demo path can exercise it
-    // without configuring anything. Two entries because the widget will be
-    // embedded on the marketing site and driven from the local dev server, and
-    // matching is exact — no wildcards, no subdomain suffixes.
-    widgetOrigins: ['https://meridian.example', 'http://localhost:3000'],
-    users: [
-      { email: 'admin@meridian.test', name: 'Ada Okonjo', role: 'admin' },
-      { email: 'agent@meridian.test', name: 'Ravi Menon', role: 'agent' },
-      // Deliberately the same address as a Sortwood User below. Tenant-local
-      // identity (ADR-0001) is only demonstrable if some address actually
-      // exists in two tenants: these are two Users, two rows, two passwords,
-      // and neither login can reach the other.
-      { email: SHARED_EMAIL, name: 'Iris Vance', role: 'agent' },
-    ],
-    contacts: [
-      { email: 'jules@example.test', name: 'Jules Ferrand', verified: true },
-      { email: null, name: null, verified: false },
-    ],
-  },
-  sortwood: {
-    slug: 'sortwood',
-    name: 'Sortwood',
-    // A *different* origin from Meridian's, which is what makes the allowlist
-    // demonstrable rather than merely present: a page allowed to bootstrap one
-    // tenant's widget is refused by the other, and the isolation tenant proves
-    // it the same way it proves every other cross-tenant claim.
-    widgetOrigins: ['https://sortwood.example'],
-    users: [
-      { email: 'admin@sortwood.test', name: 'Petra Lindqvist', role: 'admin' },
-      // The other half of the shared-address pair. `admin` here, `agent` at
-      // Meridian — so a login that resolved the wrong row would be visible in
-      // the role it handed back, not just in the id.
-      { email: SHARED_EMAIL, name: 'Iris Vance', role: 'admin' },
-    ],
-    contacts: [
-      { email: 'sam@example.test', name: 'Sam Whitlock', verified: true },
-    ],
-  },
-} as const;
-
-const prisma = new PrismaClient({
-  adapter: new PrismaPg({
-    connectionString: process.env['MIGRATE_DATABASE_URL'],
-  }),
-});
-
-const seedTenant = async (
-  spec: (typeof SEED)[keyof typeof SEED],
-): Promise<void> => {
-  // Keyed on the natural key so re-running the seed is a no-op rather than a
-  // unique-constraint failure — compose runs it on every `up`.
-  const tenant = await prisma.tenant.upsert({
-    where: { slug: spec.slug },
-    update: { name: spec.name, widgetOrigins: [...spec.widgetOrigins] },
-    create: {
-      slug: spec.slug,
-      name: spec.name,
-      widgetOrigins: [...spec.widgetOrigins],
-    },
-  });
-
-  // Hashed per tenant rather than once for the whole seed: argon2 salts each
-  // hash, so two Users sharing a password must not share a hash — otherwise
-  // the seed would demonstrate exactly the mistake the storage format exists
-  // to prevent.
-  for (const user of spec.users) {
-    const passwordHash = await argon2.hash(SEED_PASSWORD, {
-      type: argon2.argon2id,
-    });
-
-    // A linked Google identity on the shared address alone. Everyone else holds
-    // a password and nothing else, which is the ordinary case and the one the
-    // demo signs in with — the point of seeding one linked User is to show that
-    // the two credentials sit on the *same* row rather than implying that a
-    // Google-linked User is a different kind of User.
-    const googleSubject =
-      user.email === SHARED_EMAIL ? SEED_GOOGLE_SUBJECT : null;
-
-    await prisma.user.upsert({
-      where: { tenantId_email: { tenantId: tenant.id, email: user.email } },
-      update: { name: user.name, role: user.role, passwordHash, googleSubject },
-      create: { tenantId: tenant.id, ...user, passwordHash, googleSubject },
-    });
-  }
-
-  for (const contact of spec.contacts) {
-    // A portal credential for the identified Contacts and none for the
-    // anonymous one, which is the honest split rather than a convenience: a
-    // Contact with no email is exactly the widget-born case that has no way to
-    // sign in, and seeding it a password would hide that the portal refuses it.
-    const passwordHash = contact.email
-      ? await argon2.hash(SEED_PASSWORD, { type: argon2.argon2id })
-      : null;
-
-    // The anonymous Contact has no email, so there is no natural key to upsert
-    // on — Postgres treats NULLs as distinct and re-running would pile up
-    // duplicates. Match on "this tenant's emailless contact" instead.
-    const existing = await prisma.contact.findFirst({
-      where: { tenantId: tenant.id, email: contact.email },
-    });
-
-    if (existing) {
-      await prisma.contact.update({
-        where: { id: existing.id },
-        data: { name: contact.name, verified: contact.verified, passwordHash },
-      });
-      continue;
-    }
-
-    await prisma.contact.create({
-      data: { tenantId: tenant.id, ...contact, passwordHash },
-    });
-  }
-
-  console.log(`Seeded tenant ${spec.slug} (${tenant.id})`);
-};
 
 const main = async (): Promise<void> => {
-  for (const spec of Object.values(SEED)) {
-    await seedTenant(spec);
-  }
+  const now = new Date();
 
-  // Printed rather than documented in a README that would drift: signing in
-  // needs the tenant's id, and only this run knows it.
-  console.log(
-    `\nSign in at POST /auth/sign-in with any seeded staff address and password ${JSON.stringify(SEED_PASSWORD)}, quoting the tenant id printed above.` +
-      `\nThe portal is POST /portal/auth/sign-in, with a seeded Contact address (jules@example.test, sam@example.test) and the same password.`,
-  );
+  await reset();
+
+  // Minted here rather than inside the tenant plan, because the raw value must
+  // exist in exactly two places — this variable and the console — and never in a
+  // file anyone could commit. Only the hash reaches the database, so a developer
+  // who loses the printout reseeds rather than recovering it: the same story the
+  // mint endpoint tells a real admin.
+  const token = mintServiceToken(TENANT_IDS.meridian);
+
+  await writeTenant(meridian, { now, serviceTokenHash: token.tokenHash });
+  await writeTenant(sortwood, { now });
+
+  announce(token.raw);
+};
+
+/**
+ * A tenant's size, counted from the plan rather than typed out beside it.
+ *
+ * The plan is the only thing that knows how big a tenant is, and a number
+ * written next to it is a number that goes wrong the first time somebody adds a
+ * Ticket. This is the one place the seed reports on itself, so it is the one
+ * place that must not be able to lie.
+ */
+const scale = (plan: TenantPlan): string =>
+  `${plan.name.padEnd(8)}  ${plan.id}  ` +
+  `${String(plan.users.length).padStart(2)} staff, ` +
+  `${String(plan.contacts.length).padStart(2)} contacts, ` +
+  `${String(plan.tickets.length).padStart(2)} tickets`;
+
+/**
+ * What the run leaves the developer holding.
+ *
+ * Printed rather than written into a README, because half of it is a secret that
+ * must not be committed and the rest is only true of this database. The anchored
+ * ids are the exception and are quoted anyway, so the output stands on its own
+ * without anybody having to go and look them up.
+ */
+const announce = (rawToken: string): void => {
+  console.log(`
+Seeded two tenants.
+
+  ${scale(meridian)}  showcase
+  ${scale(sortwood)}  isolation
+
+Staff sign-in is POST /auth/sign-in with a tenant id, an address and a password.
+Every seeded principal shares the password ${JSON.stringify(SEED_PASSWORD)}.
+
+  admin@meridian.test   admin, Meridian
+  agent@meridian.test   agent, Meridian
+  admin@sortwood.test   admin, Sortwood
+  dual@example.test     agent at Meridian, admin at Sortwood — one address in two
+                        tenants, two Users, and neither login reaches the other
+
+Contacts sign in at POST /portal/auth/sign-in with the same password:
+jules@example.test (Meridian) and sam@example.test (Sortwood).
+
+Reference Tickets, stable across reseeds:
+
+  ${TICKET_IDS.breached}  past its first-response target
+  ${TICKET_IDS.paused}  pending, resolution clock stopped
+  ${TICKET_IDS.deflected}  answered and closed by the AI layer
+  ${TICKET_IDS.reopened}  resolved, reopened, resolved again
+  ${TICKET_IDS.closedWithSuccessor}  closed, with a linked successor
+
+Meridian service token — shown once, stored only as a hash:
+
+  ${rawToken}
+`);
 };
 
 main()

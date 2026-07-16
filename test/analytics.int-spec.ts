@@ -395,18 +395,26 @@ describe('Analytics: live tenant-scoped aggregates', () => {
     });
 
     it('defaults to a 30-day window anchored on creation time', async () => {
-      // No `from`/`to`: the default window is the last 30 days, so a cohort
-      // pinned to 2020 falls entirely outside it and the tenant reports zero
-      // rather than the fixture.
+      // No `from`/`to`: the default window is the last 30 days, so the cohort
+      // pinned to 2020 falls entirely outside it.
+      //
+      // Asserted as "no 2020 day appears" rather than as an empty report,
+      // because the tenant is not empty — the seed fills Meridian's recent weeks
+      // on purpose, so a demo has something to show. An assertion that the
+      // default window returns nothing would have been an assertion about the
+      // seed's contents wearing the costume of one about the window.
       const { body } = await server()
         .get('/analytics')
+        .query({ groupBy: 'day' })
         .set('Authorization', `Bearer ${agentToken}`)
         .expect(200);
 
       const report = body as Report;
+      const days = (report.groups ?? []).map((group) => group.key);
 
-      expect(report.overall.cohortSize).toBe(0);
-      expect(report.overall.deflection.rate).toBeNull();
+      expect(days).not.toHaveLength(0);
+      expect(days.filter((day) => day.startsWith('2020-'))).toEqual([]);
+      expect(new Date(report.from).getTime()).toBeGreaterThan(Date.parse(TO));
     });
   });
 

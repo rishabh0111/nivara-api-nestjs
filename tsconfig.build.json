@@ -1,4 +1,7 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*.spec.ts"]
+  // `prisma` is typechecked by the root config but never built: the seed and its
+  // plans are a development artifact, and the runtime image has no business
+  // carrying a script that can truncate the database.
+  "exclude": ["node_modules", "test", "dist", "prisma", "**/*.spec.ts"]
 }

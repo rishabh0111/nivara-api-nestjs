@@ -21,6 +21,18 @@ npm run db:migrate && npm run db:seed
 npm run start:dev
 ```
 
+## The seeded demo
+
+`npm run db:seed` builds two tenants and prints the credentials for both. Nothing has to be configured first — sign-in is email and password, so the demo path needs no OAuth provider.
+
+**Meridian** is the showcase: five staff, twenty Contacts, and fifty Tickets spread across the last six weeks, covering every state, priority and source, with real threads and internal Notes. Its SLA clocks include breached, paused and still-running ones, and eight to ten Tickets were answered and closed by the AI layer alone — so deflection is non-zero on the first request rather than after somebody constructs the data by hand.
+
+**Sortwood** is the isolation tenant: three staff, three Contacts, five Tickets. It is small on purpose. One tenant makes isolation unfalsifiable — every query returns the only rows that exist — and a second one small enough to read end to end lets a developer check the claim instead of trusting it.
+
+Every timestamp is relative to the moment the seed ran, so the SLA and analytics pictures stay realistic whenever it is run. The seed truncates before it writes, so re-running it is how you reset to a known state. A handful of ids are fixed across runs — both tenants, the staff, the service token, and five reference Tickets — so documentation can quote a record without going stale; they live in [prisma/seed/anchors.ts](prisma/seed/anchors.ts).
+
+One Meridian service token is minted on each run. The raw value is printed once and only its hash is stored, exactly as the mint endpoint behaves. Refresh tokens and widget sessions are deliberately not seeded: both are ephemeral session state, and seeding either would mint a credential nobody holds.
+
 ## Tenant isolation
 
 Isolation is a property of the database, not a discipline in application code. Every tenant-scoped table has Postgres row-level security enabled and forced, with a policy predicated on a transaction-local setting. A forgotten `where` in a service cannot leak another tenant's rows, because Postgres never returns them.
