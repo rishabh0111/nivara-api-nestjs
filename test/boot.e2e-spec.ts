@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { bootAppUnderCurrentEnv } from './helpers/boot';
 import { withEnv } from './helpers/env';
-import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
+import { UNREACHABLE_DATABASE_URL } from './helpers/unreachable-urls';
 
 /**
  * The key-free `docker compose up` path is a hard requirement, not a
@@ -93,17 +93,21 @@ describe('boot tolerance', () => {
     });
   });
 
-  it('boots on the database connection string alone', async () => {
-    // Everything else absent. This is the key-free path: compose supplies the
-    // connection string itself, as a throwaway local default, so a clean clone
-    // still needs no credentials from the developer.
+  it('boots on the three required keys, with every optional one absent', async () => {
+    // The key-free path, stated exactly. Three keys are required — the
+    // connection string and the two signing secrets — and compose supplies all
+    // three as throwaway local defaults, so a clean clone still needs no
+    // credentials from the developer. Everything else is absent here: no Redis,
+    // no Google, no Slack, not even a port.
+    //
+    // The secrets are required rather than defaulted on purpose: a signing key
+    // with a built-in fallback is a forgeable token in any deployment that
+    // forgets to set one, which is a silent failure rather than a loud one.
     await withEnv(
       {
         ...ABSENT,
         DATABASE_URL: UNREACHABLE_DATABASE_URL,
         REDIS_URL: undefined,
-        JWT_SECRET: undefined,
-        WIDGET_SESSION_SECRET: undefined,
         PORT: undefined,
       },
       async () => {

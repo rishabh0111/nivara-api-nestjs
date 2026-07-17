@@ -8,6 +8,7 @@ import {
 import { Response } from 'express';
 import { AppConfigService } from '../config/app-config.service';
 import { Public } from '../auth/auth.guard';
+import { RedisService } from '../redis/redis.service';
 import { evaluateReadiness } from '../scheduler/readiness';
 import { SchedulerHeartbeat } from '../scheduler/scheduler-heartbeat';
 import { TenancyService } from '../tenancy/tenancy.service';
@@ -25,6 +26,7 @@ export class HealthController {
 
   constructor(
     private readonly tenancy: TenancyService,
+    private readonly redis: RedisService,
     private readonly heartbeat: SchedulerHeartbeat,
     private readonly config: AppConfigService,
   ) {}
@@ -68,6 +70,10 @@ export class HealthController {
    * free-tier service would be allowed to sleep, which stops the ticker, which
    * is the outage this endpoint exists to report.
    *
+   * Redis is reported here without being judged — see `evaluateReadiness`,
+   * which makes the argument for why an unreachable one is degraded rather than
+   * down.
+   *
    * The scheduler heartbeat is a dependency here alongside Postgres, because a
    * wedged ticker is invisible from every other angle: the API keeps answering
    * perfectly while every timed promise the product makes quietly stops. A
@@ -81,9 +87,9 @@ export class HealthController {
    */
   @Get('ready')
   @ApiOperation({
-    summary: 'Readiness — Postgres and the scheduler heartbeat',
+    summary: 'Readiness — Postgres, Redis and the scheduler heartbeat',
     description:
-      'Answers 200 when the database is reachable and no enabled tick has stalled, and 503 otherwise, with the offending dependency named in the body. Not the keep-warm ping target — that is `/health`.',
+      'Answers 200 when the database is reachable and no enabled tick has stalled, and 503 otherwise, with the offending dependency named in the body. Redis is reported but never fails the check: it fails open, so an unreachable one is degraded rather than down. Not the keep-warm ping target — that is `/health`.',
   })
   @ApiOkResponse({ type: ReadinessDto })
   @ApiServiceUnavailableResponse({
@@ -94,9 +100,19 @@ export class HealthController {
   async readiness(
     @Res({ passthrough: true }) response: Response,
   ): Promise<ReadinessDto> {
+    // Both probes at once. They are independent, each carries its own timeout,
+    // and running them in sequence would make the endpoint's worst case the sum
+    // of two outages — a readiness check slow enough to time out is one that
+    // reports nothing at all.
+    const [database, redis] = await Promise.all([
+      this.tenancy.ping(),
+      this.redis.probe(),
+    ]);
+
     const readiness = evaluateReadiness({
       now: new Date(),
-      database: { reachable: await this.tenancy.ping() },
+      database: { reachable: database },
+      redis,
       scheduler: {
         // Read from configuration rather than from whether any tick registered.
         // "Switched on but never started" is a real failure — a ticker that

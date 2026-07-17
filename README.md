@@ -67,7 +67,8 @@ Background: [docs/research/rls-neon-pooling.md](docs/research/rls-neon-pooling.m
 | `GET /auth/me` | The authenticated principal, read through the tenant its own token armed. |
 | `POST /staff/invitations` | Admin-only. Provisions a pending User and returns a single-use invitation token, shown once. |
 | `POST /staff/invitations/accept` | Sets the invited User's password, spending the invitation. Public — the invitee has no credential yet. |
-| `GET /health` | Liveness. Dependency-free — touches neither Postgres nor Redis, so a keep-warm ping never fails on a dependency blip. A readiness endpoint arrives alongside the dependencies it would check. |
+| `GET /health` | Liveness, and the keep-warm target. Dependency-free — touches neither Postgres nor Redis, so a ping never fails on a dependency blip. |
+| `GET /health/ready` | Readiness. A database round-trip, Redis's status, and the scheduler heartbeat; 503 when the database is unreachable or a tick has stalled. |
 | `GET /meta/error-codes` | The closed catalog of machine-readable error codes. |
 | `GET /docs` | Browsable OpenAPI documentation. |
 | `GET /openapi.json` | The generated OpenAPI document, for client generation. |
@@ -134,7 +135,9 @@ npm run lint
 npm run openapi:emit  # writes openapi.json
 ```
 
-Tests run at two seams and no others: the booted application driven over its public protocols (Supertest for HTTP), and — once the scheduler exists — a directly-invokable scheduler tick. Tests do not mock the data layer. The load-bearing invariants in this system live in SQL rather than in application code, so a test that mocks Postgres proves nothing about them.
+Tests run at two seams: the booted application driven over its public protocols (Supertest for HTTP), and a directly-invokable scheduler tick. Tests do not mock the data layer. The load-bearing invariants in this system live in SQL rather than in application code, so a test that mocks Postgres proves nothing about them.
+
+There is one deliberate exception, [test/deploy-contract.spec.ts](test/deploy-contract.spec.ts), which reads the Dockerfile, the compose file and the deployment blueprint as text. What it asserts — that the owner credential is absent from the running process, that `.env.example` documents every key — is not a property of any running process, and the way each of them breaks is a line added to a file nothing reads until a deploy.
 
 Every suite that touches the database runs **in band**, one at a time. They share one Postgres and one seed, and several of them assert over rows they did not create — a Ticket count, a job left undrained. Under Jest's default parallelism those assertions are races that pass or fail on worker scheduling, which is the worst kind of red: it appears when an unrelated suite is added and disappears when the file is run alone. `test:unit` stays parallel, because it opens no connection and has nothing to race against.
 
@@ -145,3 +148,28 @@ That is why the `*.int-spec.ts` files are in the **default** run rather than beh
 Entirely environment-driven. [.env.example](.env.example) documents every key; nothing real is committed. Absence of an optional integration is a supported state. Half-configuring one is not — supplying a client id without its secret fails at boot rather than at the first callback.
 
 `REDIS_URL` is optional on the same terms. Everything that uses it fails open, so a process without Redis serves every request correctly and simply enforces no rate limits — which is what keeps the credential-free first run working. The three `RATE_LIMIT_*_PER_MINUTE` ceilings are starting values, tunable per environment.
+
+## Deployment
+
+The image that runs locally is the image that deploys. [render.yaml](render.yaml) is the platform glue and the only file that knows which platform this is; everything it configures — migrate-then-boot, the role split wired by environment, the liveness/readiness split, the scheduler flag — is framework- and platform-neutral.
+
+**Migrations run as a release step, never at boot.** `npm run release` applies them before the new instance takes traffic, and it is the same command local compose runs, so a migration that works locally is evidence about the deploy rather than a hope. Migrating at boot would race two instances against one database and would require the owner credential inside the long-running process.
+
+The runtime image can run that step itself — it carries the migrations and the Prisma CLI — because a pre-deploy hook runs inside the service's own image. On the free plan, where pre-deploy hooks are not available, the same command is run by hand against the same image before promoting the deploy; the ordering is the contract, and the hook is only how it is triggered.
+
+**The two roles are wired by environment.** The release step gets `MIGRATE_DATABASE_URL` — the owner, over the direct endpoint — and the running process gets `DATABASE_URL`, the non-`BYPASSRLS` `app_user` over the pooled one. It needs no direct connection: tenant context is transaction-local, so it is safe under transaction-mode pooling.
+
+Both variables are set on the same service, because a pre-deploy hook runs inside the service's own environment and there is no narrower scope to give one. What makes the owner credential genuinely absent from the running process is the image entrypoint, which `env -u`s it before `exec`ing node — so the process starts with an environment that never contained it. The application also refuses to boot in production if it ever finds one.
+
+**Two health endpoints, and they are not interchangeable.**
+
+| | | |
+|---|---|---|
+| `GET /health` | Liveness | Touches nothing. The platform health check and the keep-warm ping target. |
+| `GET /health/ready` | Readiness | Database round-trip, Redis status, scheduler heartbeat. 503 on real failure. |
+
+Redis is reported on readiness but never fails it: it fails open everywhere it is used, so an unreachable one is `degraded` — no ceilings enforced, every request still served. Failing readiness for it would take a working deployment out of rotation, and every instance out at once.
+
+**Keep-warm.** The free tier sleeps an idle service, and the scheduler runs in-process, so a sleeping service is a stopped ticker. An external monitor pings `/health` every 5 minutes, comfortably inside the ~15-minute idle window — both numbers are constants in [src/health/keep-warm.ts](src/health/keep-warm.ts) with a test over the relationship between them. Correctness does not rest on the ping arriving: both ticks fire on state rather than on events, so a missed ping delays sweep work instead of losing it ([test/deployment.int-spec.ts](test/deployment.int-spec.ts)).
+
+**Splitting the scheduler out is a deploy change.** `RUN_SCHEDULER` is the whole mechanism: set it `false` on the web service and add a second service with it `true`. Nothing in the code assumes co-location — the drain claims with `SELECT … FOR UPDATE SKIP LOCKED` and the sweeps fire on set-once predicates, so running both is safe too.

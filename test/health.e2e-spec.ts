@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { bootApp, bootAppUnderCurrentEnv } from './helpers/boot';
 import { withEnv } from './helpers/env';
-import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
+import { UNREACHABLE_DATABASE_URL } from './helpers/unreachable-urls';
 
 describe('GET /health', () => {
   let app: INestApplication;

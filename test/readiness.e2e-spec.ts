@@ -8,7 +8,10 @@ import {
 import { TenancyService } from 'src/tenancy/tenancy.service';
 import request from 'supertest';
 import { asOwner } from './helpers/as-owner';
-import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
+import {
+  UNREACHABLE_DATABASE_URL,
+  UNREACHABLE_REDIS_URL,
+} from './helpers/unreachable-urls';
 import { bootApp, bootAppUnderCurrentEnv } from './helpers/boot';
 import { withEnv } from './helpers/env';
 import { seededTenantIds } from './helpers/seeded-tenants';
@@ -43,6 +46,10 @@ describe('GET /health/ready', () => {
       expect(response.body).toEqual({
         status: 'ok',
         database: { status: 'ok' },
+        // Dormant rather than degraded: the suite runs with no `REDIS_URL` at
+        // all, which is the same configuration the credential-free first run
+        // boots in, and it is a supported one rather than a fault.
+        redis: { status: 'dormant' },
         scheduler: { status: 'disabled', ticks: [] },
       });
     });
@@ -171,6 +178,32 @@ describe('GET /health/ready', () => {
           // keep-warm ping failed here, the free-tier service would be allowed
           // to sleep, which stops the ticker for good.
           await request(app.getHttpServer()).get('/health').expect(200);
+        } finally {
+          await app.close();
+        }
+      });
+    });
+  });
+
+  describe('with Redis configured and unreachable', () => {
+    it('reports it degraded and stays ready, because it fails open', async () => {
+      // The asymmetry between Redis and the other two dependencies, asserted
+      // end to end. Redis backs rate limiting and the cache, both of which fail
+      // open, so a process that cannot reach it answers every request correctly
+      // and simply enforces no ceilings. A 503 here would take a working
+      // deployment out of rotation — and take every instance out together,
+      // since they all share one Redis.
+      await withEnv({ REDIS_URL: UNREACHABLE_REDIS_URL }, async () => {
+        const app = await bootAppUnderCurrentEnv();
+
+        try {
+          const response = await request(app.getHttpServer()).get(
+            '/health/ready',
+          );
+
+          expect(response.status).toBe(200);
+          expect(response.body.status).toBe('ok');
+          expect(response.body.redis.status).toBe('degraded');
         } finally {
           await app.close();
         }

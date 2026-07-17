@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import {
   DatabaseHealth,
   Readiness,
+  RedisHealth,
   SchedulerHealth,
   TickHealth,
 } from '../scheduler/readiness';
@@ -22,6 +23,16 @@ import {
 class DependencyDto implements DatabaseHealth {
   @ApiProperty({ enum: ['ok', 'unavailable'], example: 'ok' })
   status!: 'ok' | 'unavailable';
+}
+
+class RedisDto implements RedisHealth {
+  @ApiProperty({
+    enum: ['ok', 'degraded', 'dormant'],
+    description:
+      'Neither `degraded` nor `dormant` fails the check. `dormant` means REDIS_URL is unset, which is a supported configuration; `degraded` means it is set and not answering. Both mean no rate-limit ceilings are being enforced, and every request is still served correctly.',
+    example: 'ok',
+  })
+  status!: 'ok' | 'degraded' | 'dormant';
 }
 
 class TickDto implements TickHealth {
@@ -65,6 +76,9 @@ export class ReadinessDto implements Readiness {
 
   @ApiProperty({ type: DependencyDto })
   database!: DependencyDto;
+
+  @ApiProperty({ type: RedisDto })
+  redis!: RedisDto;
 
   @ApiProperty({ type: SchedulerDto })
   scheduler!: SchedulerDto;

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { AppConfigService } from '../config/app-config.service';
+import { RedisReport } from '../scheduler/readiness';
 
 /**
  * How long a single command may take before it is abandoned.
@@ -93,6 +94,32 @@ export class RedisService implements OnModuleDestroy {
       // first connect must not reject into bootstrap, and ioredis keeps
       // retrying in the background regardless.
     });
+  }
+
+  /**
+   * Whether Redis is configured, and whether it is answering right now.
+   *
+   * For readiness, and it is a live round trip rather than a cached connection
+   * flag on purpose: `status === 'ready'` reflects what ioredis last observed,
+   * and a connection that has gone bad without erroring — a network path that
+   * blackholes rather than resets — reports itself ready right up until a
+   * command times out. The check that matters is the one the request path
+   * actually makes.
+   *
+   * It cannot throw. Every failure mode here *is* the answer, and readiness
+   * asking about a dependency must not be a way to make the endpoint fail. The
+   * `commandTimeout` on the client bounds how long "unreachable" takes to
+   * establish, so this is the same 200ms ceiling every other command has.
+   */
+  async probe(): Promise<RedisReport> {
+    if (!this.client) return { configured: false, reachable: false };
+
+    try {
+      await this.client.ping();
+      return { configured: true, reachable: true };
+    } catch {
+      return { configured: true, reachable: false };
+    }
   }
 
   onModuleDestroy(): void {

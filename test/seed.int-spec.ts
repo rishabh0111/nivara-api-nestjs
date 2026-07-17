@@ -43,7 +43,20 @@ const count = async (sql: string, params: unknown[] = []): Promise<number> => {
 };
 
 const runSeed = (): void => {
-  execFileSync('npx', ['prisma', 'db', 'seed'], { stdio: 'ignore' });
+  // On Windows `npx` is `npx.cmd`, which `execFileSync` cannot reach: the bare
+  // name is `ENOENT`, and the `.cmd` is `EINVAL`, because Node refuses to spawn
+  // a batch file without a shell. So this whole file failed there for a reason
+  // having nothing to do with the seed.
+  //
+  // The shell is switched on for that platform alone, and it is safe here
+  // because every argument is a literal in this file — nothing interpolated, so
+  // there is nothing for an interpreter to interpret.
+  const windows = process.platform === 'win32';
+
+  execFileSync(windows ? 'npx.cmd' : 'npx', ['prisma', 'db', 'seed'], {
+    stdio: 'ignore',
+    shell: windows,
+  });
 };
 
 /**

@@ -40,14 +40,21 @@ services:
       retries: 10
 
   # Schema and seed, as their own short-lived step — the only place the owner
-  # credential appears. It runs to completion and exits before `api` starts.
+  # credential appears. It runs to completion and exits before `api` starts,
+  # which is the same migrate-then-boot ordering the deployed release step has.
   migrate:
     build:
       context: .
-      # The build stage still has the dev dependencies — the Prisma CLI and the
-      # TypeScript seed live there, and stay out of the runtime image.
+      # The build stage, for the seed alone: it is TypeScript and needs the
+      # `ts-node` that the runtime image deliberately does not carry. The
+      # migration itself would run just as well in the runtime image, and does
+      # — that is what the deployed pre-deploy hook runs.
       target: build
-    command: ['sh', '-c', 'npx prisma migrate deploy && npx prisma db seed']
+    # `npm run release` is the identical command the deployed release step
+    # runs, named once in package.json so the two cannot drift. Seeding is
+    # local-only and sits outside it: the deployed release migrates and stops,
+    # because the seed truncates before it writes.
+    command: ['sh', '-c', 'npm run release && npx prisma db seed']
     environment:
       # Owner role, direct (unpooled) connection. Creating tables and seeding
       # two tenants are both things every RLS policy would refuse, so this step

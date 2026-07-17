@@ -6,6 +6,9 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms);
 const FAST_MS = 3_000;
 const SLOW_MS = 60_000;
 
+/** Redis configured and answering — the uninteresting case, so a shared one. */
+const REDIS_UP = { configured: true, reachable: true };
+
 const ticking = (fastAgeMs = 0, slowAgeMs = 0) => ({
   enabled: true,
   ticks: [
@@ -19,6 +22,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: ticking(),
     });
 
@@ -31,6 +35,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: false },
+      redis: REDIS_UP,
       scheduler: ticking(),
     });
 
@@ -45,6 +50,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: ticking(0, SLOW_MS * (STALE_TICK_MULTIPLIER + 1)),
     });
 
@@ -65,6 +71,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: ticking(SLOW_MS, 0),
     });
 
@@ -80,6 +87,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: ticking(FAST_MS * STALE_TICK_MULTIPLIER, 0),
     });
 
@@ -93,6 +101,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: { enabled: false, ticks: [] },
     });
 
@@ -108,6 +117,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: { enabled: true, ticks: [] },
     });
 
@@ -122,6 +132,7 @@ describe('evaluateReadiness', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: {
         enabled: true,
         ticks: [{ name: 'fast', lastTickAt: null, intervalMs: FAST_MS }],
@@ -135,10 +146,63 @@ describe('evaluateReadiness', () => {
     });
   });
 
+  it('reports Redis dormant, and stays ready, when it is not configured', () => {
+    // The credential-free first run, and most of the test suite. Redis is an
+    // optional dependency whose absence is a deliberate configuration rather
+    // than a fault — a 503 here would make `docker compose up` report an
+    // unhealthy service the moment REDIS_URL were left out.
+    const result = evaluateReadiness({
+      now: NOW,
+      database: { reachable: true },
+      redis: { configured: false, reachable: false },
+      scheduler: ticking(),
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.redis.status).toBe('dormant');
+  });
+
+  it('reports Redis degraded — not unavailable — when it is configured and down', () => {
+    // The one dependency that is reported without being judged, and the
+    // asymmetry is the whole point of the word "degraded": an unreachable Redis
+    // costs the deployment its ceilings, never its ability to answer.
+    const result = evaluateReadiness({
+      now: NOW,
+      database: { reachable: true },
+      redis: { configured: true, reachable: false },
+      scheduler: ticking(),
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.redis.status).toBe('degraded');
+  });
+
+  it('distinguishes a Redis that is down from one that was never asked for', () => {
+    // Both are "no ceilings are being enforced", and an operator needs to know
+    // which — one is a deploy that is missing a variable, the other is a
+    // provider that is down, and they have different fixes.
+    const down = evaluateReadiness({
+      now: NOW,
+      database: { reachable: true },
+      redis: { configured: true, reachable: false },
+      scheduler: ticking(),
+    });
+
+    const absent = evaluateReadiness({
+      now: NOW,
+      database: { reachable: true },
+      redis: { configured: false, reachable: false },
+      scheduler: ticking(),
+    });
+
+    expect(down.redis.status).not.toEqual(absent.redis.status);
+  });
+
   it('reports the age of each tick, so a stall is diagnosable from the response', () => {
     const result = evaluateReadiness({
       now: NOW,
       database: { reachable: true },
+      redis: REDIS_UP,
       scheduler: ticking(4_500, 30_000),
     });
 

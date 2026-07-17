@@ -42,9 +42,24 @@ export interface SchedulerReport {
   ticks: TickReport[];
 }
 
+/**
+ * Redis, which is reported but never judged.
+ *
+ * `configured` and `reachable` are separate facts because "no REDIS_URL" and
+ * "REDIS_URL that does not answer" are the same *effect* — no ceilings, no
+ * cache — with different causes and different fixes. Collapsing them to one
+ * boolean would leave an operator unable to tell a missing variable from a
+ * provider outage.
+ */
+export interface RedisReport {
+  configured: boolean;
+  reachable: boolean;
+}
+
 export interface ReadinessInput {
   now: Date;
   database: { reachable: boolean };
+  redis: RedisReport;
   scheduler: SchedulerReport;
 }
 
@@ -60,6 +75,14 @@ export interface DatabaseHealth {
   status: 'ok' | 'unavailable';
 }
 
+export interface RedisHealth {
+  /**
+   * Neither of the two non-`ok` values is a failure — see the verdict below for
+   * why an unreachable Redis is reported rather than acted on.
+   */
+  status: 'ok' | 'degraded' | 'dormant';
+}
+
 export interface SchedulerHealth {
   /** `disabled` is a healthy state, not a degraded one — see below. */
   status: 'ok' | 'stalled' | 'disabled';
@@ -69,6 +92,7 @@ export interface SchedulerHealth {
 export interface Readiness {
   status: 'ok' | 'unavailable';
   database: DatabaseHealth;
+  redis: RedisHealth;
   scheduler: SchedulerHealth;
 }
 
@@ -109,10 +133,21 @@ const healthOf = (tick: TickReport, now: Date): TickHealth => {
  * can be moved to its own service as a deploy change, and on the day that
  * happens every web instance runs without one — if that read as unready, the
  * flag would be unusable for the thing it was built for.
+ *
+ * Redis is reported and never judged, which is the difference between a
+ * dependency and a degradation. Rate limiting and the cache both fail open, so
+ * an unreachable Redis costs the deployment its ceilings and nothing else —
+ * every request is still answered correctly. Failing readiness on it would
+ * convert a fully working service into an outage, and since every instance
+ * shares one Redis it would take the whole deployment out simultaneously. The
+ * fact still belongs in the body: "no ceilings are being enforced" is exactly
+ * what an operator wants to find out from a health check rather than from a
+ * bill.
  */
 export const evaluateReadiness = ({
   now,
   database,
+  redis,
   scheduler,
 }: ReadinessInput): Readiness => {
   const ticks = scheduler.enabled
@@ -131,12 +166,21 @@ export const evaluateReadiness = ({
 
   const databaseStatus = database.reachable ? 'ok' : 'unavailable';
 
+  const redisStatus = !redis.configured
+    ? 'dormant'
+    : redis.reachable
+      ? 'ok'
+      : 'degraded';
+
   return {
+    // Note which of the three below appears here: the database and the ticker,
+    // and deliberately not Redis.
     status:
       databaseStatus === 'ok' && schedulerStatus !== 'stalled'
         ? 'ok'
         : 'unavailable',
     database: { status: databaseStatus },
+    redis: { status: redisStatus },
     scheduler: { status: schedulerStatus, ticks },
   };
 };

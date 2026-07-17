@@ -1,5 +1,5 @@
 import { config } from 'dotenv';
-import { UNREACHABLE_DATABASE_URL } from './helpers/database-urls';
+import { UNREACHABLE_DATABASE_URL } from './helpers/unreachable-urls';
 
 /**
  * The configuration floor every test boots on.
