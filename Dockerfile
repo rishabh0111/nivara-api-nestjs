@@ -37,35 +37,16 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package*.json ./
-# `--ignore-scripts` because the generated client is copied from the build stage
-# below, so this image's own `postinstall` generate has nothing to do here.
-#
-# The rebuild that follows is narrow and load-bearing: skipping scripts also
-# skips the step that downloads Prisma's schema engine, and the CLI would then
-# try to fetch it on first use — as an unprivileged user, into a root-owned
-# directory, during the release step of a deploy. Fetching it now makes the
-# image self-contained: the release step needs no network but the database's.
-RUN npm ci --omit=dev --ignore-scripts \
-  && npm rebuild @prisma/engines \
-  && npm cache clean --force
+# The generated client is copied from the build stage below, so the
+# `postinstall` generate has nothing to do here — and the Prisma CLI it needs is
+# a dev dependency that deliberately does not exist in this image. Nothing in
+# this image migrates: the release step runs in CI, from a checkout of the same
+# commit, so the migrations and the CLI have no reason to ship to production.
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # The generated Prisma client lives under `src/`, so it is already compiled
 # into `dist/` — one artifact, no second copy to keep in step.
 COPY --from=build /app/dist ./dist
-
-# The migration schedule, and the config that points the CLI at the owner
-# credential. They are here because *this* image runs the release step: the
-# platform's pre-deploy hook runs a command inside the service's own image, so
-# an image that cannot migrate would need a second image built from the same
-# commit — and "the artifact that was tested is the artifact that migrated"
-# would stop being true. That is also why `prisma` is a runtime dependency
-# rather than a dev one.
-#
-# Nothing here is read by the running application: `prisma.config.ts` names
-# MIGRATE_DATABASE_URL, which the entrypoint below strips before the process
-# starts. The files are inert once the release step has exited.
-COPY prisma.config.ts ./
-COPY prisma ./prisma
 
 # Run unprivileged. The database role split is enforced separately, in SQL.
 USER node
@@ -73,15 +54,14 @@ USER node
 EXPOSE 3000
 
 # The owner credential is removed from the environment before the application
-# process begins, and this is the mechanism that makes "absent from the running
-# process" true rather than merely intended.
+# process begins, so `node` is `exec`d with an environment that never contained
+# it and no code path, child process, or crash dump can reach a credential that
+# bypasses row-level security.
 #
-# It has to be done here because the release step and the web process share one
-# environment on every platform that runs pre-deploy hooks in the service's own
-# container — supply MIGRATE_DATABASE_URL to the service and the long-running
-# process inherits it too. Stripping it in the entrypoint means `node` is
-# `exec`d with an environment that never contained it, so no code path, child
-# process, or crash dump in the application can reach a credential that bypasses
-# row-level security. The production check in `env.schema.ts` is the second belt:
-# it refuses to boot if this one is ever bypassed.
+# Belt and braces rather than the primary mechanism, and worth being clear about
+# which it is. What actually keeps the credential out is that the release step
+# runs in CI and the deployed service is never given one — this line is what
+# holds if somebody adds it to the dashboard, and the production check in
+# `env.schema.ts` is what holds if somebody changes this line. Each of the three
+# is cheap; the failure they guard against is silent and total.
 CMD ["sh", "-c", "exec env -u MIGRATE_DATABASE_URL node dist/main"]

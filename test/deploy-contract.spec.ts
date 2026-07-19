@@ -30,6 +30,7 @@ const compose = read('docker-compose.yml');
 const blueprint = read('render.yaml');
 const envExample = read('.env.example');
 const gitignore = read('.gitignore');
+const releaseWorkflow = read('.github/workflows/release.yml');
 
 /** The owner role's connection string — the credential that bypasses RLS. */
 const OWNER_CREDENTIAL = 'MIGRATE_DATABASE_URL';
@@ -62,7 +63,7 @@ describe('the deployment contract', () => {
 
       expect(scripts.scripts.release).toContain('prisma migrate deploy');
       expect(compose).toContain('npm run release');
-      expect(blueprint).toContain('preDeployCommand: npm run release');
+      expect(releaseWorkflow).toContain('npm run release');
     });
 
     it('never migrates at application boot', () => {
@@ -73,23 +74,49 @@ describe('the deployment contract', () => {
       expect(dockerfile).toMatch(/CMD .*node dist\/main/);
       expect(dockerfile).not.toMatch(/CMD .*migrate/);
     });
+
+    it('lets nothing but the release deploy, so the order cannot be lost', () => {
+      // The free tier has no pre-deploy hook, so the ordering is imposed by the
+      // release workflow migrating and only then calling the deploy hook. That
+      // holds only while a push cannot deploy on its own: with `autoDeploy` on,
+      // the two would race and the winner would decide whether the new instance
+      // met the schema it was built for.
+      expect(blueprint).toMatch(/^\s*autoDeploy: false/m);
+      expect(releaseWorkflow).toContain('RENDER_DEPLOY_HOOK_URL');
+
+      // And the deploy is a later step than the migration in the same job, so
+      // a failed migration cannot be followed by a deploy. Compared by step
+      // name rather than by command, because both strings also appear in the
+      // file's opening commentary — where their order means nothing.
+      const steps = [...releaseWorkflow.matchAll(/^ +- name: (.+)$/gm)].map(
+        ([, name]) => name,
+      );
+
+      expect(steps).toEqual(['Apply migrations', 'Trigger the deploy']);
+    });
   });
 
   describe('the two database roles', () => {
-    it('strips the owner credential before the application process starts', () => {
-      // The mechanism, not the intention. The release step and the web process
-      // share one environment on any platform that runs a pre-deploy hook in
-      // the service's own container, so the credential has to be removed rather
-      // than merely not supplied — `node` is then `exec`d with an environment
-      // that never contained it.
+    it('never gives the deployed service the owner credential at all', () => {
+      // The primary mechanism, and the strongest form the guarantee takes: the
+      // credential belongs to the release step, which runs in CI and holds it
+      // as a secret there. The deployed service cannot bypass row-level
+      // security because there is nothing in its environment to bypass it with.
+      expect(declaredInBlueprint).not.toContain(OWNER_CREDENTIAL);
+      expect(releaseWorkflow).toContain(OWNER_CREDENTIAL);
+    });
+
+    it('strips it from the process anyway, in case somebody adds it', () => {
+      // Second belt. A variable added in the platform's dashboard appears in
+      // no file this test can read, so the entrypoint is what holds then —
+      // `node` is `exec`d with an environment that never contained it.
       expect(dockerfile).toMatch(
         new RegExp(`CMD .*env -u ${OWNER_CREDENTIAL} .*node dist/main`),
       );
     });
 
     it('refuses to boot a production process that carries one anyway', () => {
-      // The backstop beneath the entrypoint, for a platform whose start command
-      // is configured elsewhere.
+      // Third belt, for the day somebody changes the entrypoint.
       const result = envSchema.safeParse({
         NODE_ENV: 'production',
         DATABASE_URL: 'postgres://app_user@localhost:5432/nivara',
@@ -141,16 +168,18 @@ describe('the deployment contract', () => {
       // missing there is a capability that is off in production and on
       // everywhere else — including in the head of whoever wrote the schema.
       //
-      // `PORT` is the one exception, and it is the platform's to set: the
-      // service is handed a port to listen on, and a blueprint that named one
-      // would be arguing with it.
-      const platformSupplied = ['PORT'];
+      // Two keys are deliberately absent, for opposite reasons. `PORT` is the
+      // platform's to set — the service is handed a port to listen on, and a
+      // blueprint naming one would be arguing with it. The owner credential is
+      // absent because the whole role split rests on it being absent; the test
+      // above asserts that directly.
+      const deliberatelyAbsent = ['PORT', OWNER_CREDENTIAL];
 
       // A declaration, not a mention. Most of these keys also appear in the
       // blueprint's comments, so a substring search would report the file
       // complete while it declared nothing at all.
       for (const key of CONFIGURED_KEYS) {
-        if (platformSupplied.includes(key)) continue;
+        if (deliberatelyAbsent.includes(key)) continue;
 
         expect([key, declaredInBlueprint.has(key)]).toEqual([key, true]);
       }

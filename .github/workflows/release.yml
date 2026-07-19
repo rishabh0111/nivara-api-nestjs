@@ -1,0 +1,67 @@
+# The release step, and the trigger for the deploy that follows it.
+#
+# This is where migrate-then-boot is enforced on the free tier. The platform's
+# own pre-deploy hook is a paid feature, so the ordering cannot be bought from
+# it — but the ordering is the contract, not the hook, and a job that migrates
+# and only then asks for a deploy keeps the contract exactly.
+#
+# It also *improves* the credential story it was working around. The owner role
+# is needed by this job and by nothing else, so it lives here and is absent from
+# the deployed service altogether — not supplied and then stripped, but never
+# supplied. The service holds no credential that can bypass row-level security
+# because there is none in its environment to hold.
+#
+# Two secrets make this run, and it is inert until both are set:
+#
+#   MIGRATE_DATABASE_URL   the owner role, over the direct (unpooled) endpoint
+#   RENDER_DEPLOY_HOOK_URL the deploy hook from the service's dashboard
+#
+# `autoDeploy` is off in render.yaml, which is what makes this the only path a
+# deploy can take. With it on, a push would deploy immediately and race the
+# migration it depends on — the exact ordering this file exists to impose.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # Deploying a commit that is already on main, without pushing another one.
+  workflow_dispatch:
+
+# One release at a time. Two overlapping runs would migrate the same database
+# concurrently, which is the race that keeping migrations out of application
+# boot was meant to avoid in the first place.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `--ignore-scripts` skips the `postinstall` generate, which needs a
+      # schema this job never compiles against. The migrations are SQL and the
+      # CLI applies them; no client is generated here.
+      - run: npm ci --ignore-scripts
+
+      # The same command local compose runs, against the deployed database.
+      - name: Apply migrations
+        env:
+          MIGRATE_DATABASE_URL: ${{ secrets.MIGRATE_DATABASE_URL }}
+        run: npm run release
+
+      # Only now, and only if the migration exited zero. A failed migration
+      # leaves the currently deployed instance running against the schema it was
+      # built for, which is the right thing for it to do.
+      - name: Trigger the deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: curl --fail --silent --show-error "$HOOK"

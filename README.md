@@ -153,13 +153,15 @@ Entirely environment-driven. [.env.example](.env.example) documents every key; n
 
 The image that runs locally is the image that deploys. [render.yaml](render.yaml) is the platform glue and the only file that knows which platform this is; everything it configures — migrate-then-boot, the role split wired by environment, the liveness/readiness split, the scheduler flag — is framework- and platform-neutral.
 
-**Migrations run as a release step, never at boot.** `npm run release` applies them before the new instance takes traffic, and it is the same command local compose runs, so a migration that works locally is evidence about the deploy rather than a hope. Migrating at boot would race two instances against one database and would require the owner credential inside the long-running process.
+**Migrations run as a release step, never at boot.** `npm run release` applies them, and it is the same command local compose runs, so a migration that works locally is evidence about the deploy rather than a hope. Migrating at boot would race two instances against one database and would require the owner credential inside the long-running process.
 
-The runtime image can run that step itself — it carries the migrations and the Prisma CLI — because a pre-deploy hook runs inside the service's own image. On the free plan, where pre-deploy hooks are not available, the same command is run by hand against the same image before promoting the deploy; the ordering is the contract, and the hook is only how it is triggered.
+The step lives in [.github/workflows/release.yml](.github/workflows/release.yml) rather than in a platform pre-deploy hook, because pre-deploy hooks are a paid feature and this deploys on the free tier. The workflow migrates and only then calls the service's deploy hook; `autoDeploy` is off in the blueprint, so that is the only path a deploy can take and a push cannot race the migration it depends on. A failed migration leaves the running instance alone, against the schema it was built for.
 
 **The two roles are wired by environment.** The release step gets `MIGRATE_DATABASE_URL` — the owner, over the direct endpoint — and the running process gets `DATABASE_URL`, the non-`BYPASSRLS` `app_user` over the pooled one. It needs no direct connection: tenant context is transaction-local, so it is safe under transaction-mode pooling.
 
-Both variables are set on the same service, because a pre-deploy hook runs inside the service's own environment and there is no narrower scope to give one. What makes the owner credential genuinely absent from the running process is the image entrypoint, which `env -u`s it before `exec`ing node — so the process starts with an environment that never contained it. The application also refuses to boot in production if it ever finds one.
+Because the release step runs in CI, the owner credential is a CI secret and the deployed service is never given one at all — the strongest form the guarantee takes. Two cheaper belts sit under it: the image entrypoint `env -u`s the variable before `exec`ing node, and the application refuses to boot in production if it ever finds one.
+
+Deploying needs two secrets set on the repository — `MIGRATE_DATABASE_URL` and `RENDER_DEPLOY_HOOK_URL` — and the workflow is inert until both exist.
 
 **Two health endpoints, and they are not interchangeable.**
 

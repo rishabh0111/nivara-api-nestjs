@@ -1,10 +1,15 @@
 # The deployed shape of the same artifact `docker compose up` runs locally.
 #
-# One web service, built from the repository `Dockerfile`, with the schema
-# applied by a release step before the new instance takes traffic. Postgres
-# (Neon) and Redis (Upstash) are managed elsewhere and reached by URL, so they
-# are inputs here rather than services — which is also what lets the same image
-# run locally against the compose Postgres with nothing swapped but variables.
+# One web service on the free plan, built from the repository `Dockerfile`,
+# with the schema applied by a release step before the new instance takes
+# traffic — see `.github/workflows/release.yml`, which is where that step lives,
+# because pre-deploy hooks are a paid feature here and the free tier is the
+# constraint this deployment is designed to.
+#
+# Postgres (Neon) and Redis (Upstash) are managed elsewhere and reached by URL,
+# so they are inputs here rather than services — which is also what lets the
+# same image run locally against the compose Postgres with nothing swapped but
+# variables.
 #
 # Nothing real is committed. Every secret below is `sync: false`, which means
 # the blueprint declares that the variable exists and the value is supplied in
@@ -29,27 +34,19 @@ services:
     # and for routing, and it is polled by whatever watches the deployment.
     healthCheckPath: /health
 
-    # The release step. It runs to completion before the new instance receives
-    # traffic, and it is the same `npm run release` that local compose runs, so
-    # local and deployed apply migrations by one command with one behaviour.
+    # Deploys are triggered by the release workflow, never by a push.
     #
-    # Never at application boot: two instances booting together would race to
-    # migrate the same database, and boot-time migration would require the owner
-    # credential to be reachable from the long-running process — which is the
-    # one thing the role split exists to prevent.
+    # This is how migrate-then-boot is enforced on the free tier, where the
+    # platform's own pre-deploy hook is a paid feature: `.github/workflows/
+    # release.yml` applies the migrations and only then calls this service's
+    # deploy hook, so a deploy cannot start before the schema it needs exists.
+    # Leaving `autoDeploy` on would let a push deploy immediately and race the
+    # migration — the ordering would be down to which finished first.
     #
-    # **Known constraint.** Pre-deploy hooks are a paid-instance feature on this
-    # platform, and the service above is on the free plan — so on the free tier
-    # this line does not fire, and the release step has to be run by hand
-    # against the same image before promoting the deploy:
-    #
-    #   docker run --rm -e MIGRATE_DATABASE_URL=… <image> npm run release
-    #
-    # That is the same command, in the same image, in the same order, which is
-    # what makes it an equivalent trigger rather than a different procedure. The
-    # ordering is the contract; the hook is only how it is triggered here, and
-    # moving to a paid instance makes the trigger automatic with no other edit.
-    preDeployCommand: npm run release
+    # Migrating at application boot was the other way to get the ordering, and
+    # it is worse on both counts: instances booting together would race each
+    # other, and the process would have to hold the owner credential.
+    autoDeploy: false
 
     envVars:
       - key: NODE_ENV
@@ -63,20 +60,15 @@ services:
       - key: DATABASE_URL
         sync: false
 
-      # The owner credential, over the *direct* (unpooled) endpoint, for the
-      # release step above — migrations create tables, which every policy would
-      # refuse and no pooler should hold open.
+      # `MIGRATE_DATABASE_URL` is deliberately **not** here, and its absence is
+      # the whole of the role split rather than a detail of it.
       #
-      # It is set on the service because the pre-deploy hook runs in the
-      # service's own environment; there is no narrower scope to give it. What
-      # keeps it out of the running process is the image entrypoint, which
-      # `env -u`s it before `exec`ing node — so the long-running process is
-      # started with an environment that never contained it. The application
-      # also refuses to boot in production if it ever finds one, which is the
-      # backstop for the day this file is edited by someone who has not read the
-      # Dockerfile.
-      - key: MIGRATE_DATABASE_URL
-        sync: false
+      # The owner credential belongs to the release step, which runs in CI (see
+      # `.github/workflows/release.yml`) and holds it as a secret there. So the
+      # deployed service never carries a credential that can bypass row-level
+      # security — not one that is supplied and then dropped, but one that was
+      # never supplied. Adding it here would undo that in a single line, which
+      # is why `test/deploy-contract.spec.ts` asserts it stays absent.
 
       # Optional. Backs rate limiting and the cache, both of which fail open, so
       # an absent or unreachable Redis costs the deployment its ceilings and
