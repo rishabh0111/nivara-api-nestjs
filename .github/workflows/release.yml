@@ -16,6 +16,13 @@
 #   MIGRATE_DATABASE_URL   the owner role, over the direct (unpooled) endpoint
 #   RENDER_DEPLOY_HOOK_URL the deploy hook from the service's dashboard
 #
+# Inert means skipped, not failed. A clone of this repository has no deployment
+# and that is a supported state, on the same terms as every optional integration
+# — absent configuration leaves a capability dormant rather than fatal. So the
+# release is gated on a job that reads the secrets and reports whether there is
+# a deployment to release to, because the `secrets` context is not available in
+# an `if:` and cannot gate anything directly.
+#
 # `autoDeploy` is off in render.yaml, which is what makes this the only path a
 # deploy can take. With it on, a push would deploy immediately and race the
 # migration it depends on — the exact ordering this file exists to impose.
@@ -36,7 +43,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Is there a deployment to release to? Its own job because that is the only
+  # shape that can answer before anything effectful runs — the release job's
+  # `if:` reads this output, so a repository with no secrets skips the release
+  # entirely rather than checking out, installing, and then declining.
+  configured:
+    runs-on: ubuntu-latest
+
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+
+    steps:
+      - name: Look for the release secrets
+        id: check
+        env:
+          # Read into the environment rather than interpolated into the script:
+          # an expression expanded into shell puts the value in the command
+          # line, where a quote in a connection string is a syntax error.
+          MIGRATE: ${{ secrets.MIGRATE_DATABASE_URL }}
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$MIGRATE" ] && [ -n "$HOOK" ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$MIGRATE" ] && [ -z "$HOOK" ]; then
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::No deployment configured. Set MIGRATE_DATABASE_URL and RENDER_DEPLOY_HOOK_URL to release; skipping.'
+            exit 0
+          fi
+
+          # One without the other is somebody midway through setting this up,
+          # and both halves are dangerous alone: migrating without deploying
+          # advances the schema out from under the running instance, and
+          # deploying without migrating boots one against a schema that never
+          # arrived. Neither is a thing to do quietly.
+          echo '::error::Half-configured release. Set both MIGRATE_DATABASE_URL and RENDER_DEPLOY_HOOK_URL, or neither.'
+          exit 1
+
   release:
+    needs: configured
+    if: needs.configured.outputs.configured == 'true'
     runs-on: ubuntu-latest
 
     steps:

@@ -161,7 +161,7 @@ The step lives in [.github/workflows/release.yml](.github/workflows/release.yml)
 
 Because the release step runs in CI, the owner credential is a CI secret and the deployed service is never given one at all — the strongest form the guarantee takes. Two cheaper belts sit under it: the image entrypoint `env -u`s the variable before `exec`ing node, and the application refuses to boot in production if it ever finds one.
 
-Deploying needs two secrets set on the repository — `MIGRATE_DATABASE_URL` and `RENDER_DEPLOY_HOOK_URL` — and the workflow is inert until both exist.
+Deploying needs two secrets set on the repository — `MIGRATE_DATABASE_URL` and `RENDER_DEPLOY_HOOK_URL` — and the workflow is inert until both exist. Inert means *skipped*, not failed: a clone with no deployment is a supported state on the same terms as every optional integration, and a red X meaning "you have not configured something optional" costs the signal on the one that means something broke. Exactly one of the two is the case that does fail, loudly — migrating without deploying advances the schema out from under the running instance, and deploying without migrating boots one against a schema that never arrived.
 
 **Two health endpoints, and they are not interchangeable.**
 
@@ -172,6 +172,6 @@ Deploying needs two secrets set on the repository — `MIGRATE_DATABASE_URL` and
 
 Redis is reported on readiness but never fails it: it fails open everywhere it is used, so an unreachable one is `degraded` — no ceilings enforced, every request still served. Failing readiness for it would take a working deployment out of rotation, and every instance out at once.
 
-**Keep-warm.** The free tier sleeps an idle service, and the scheduler runs in-process, so a sleeping service is a stopped ticker. An external monitor pings `/health` every 5 minutes, comfortably inside the ~15-minute idle window — both numbers are constants in [src/health/keep-warm.ts](src/health/keep-warm.ts) with a test over the relationship between them. Correctness does not rest on the ping arriving: both ticks fire on state rather than on events, so a missed ping delays sweep work instead of losing it ([test/deployment.int-spec.ts](test/deployment.int-spec.ts)).
+**Keep-warm.** The free tier sleeps an idle service, and the scheduler runs in-process, so a sleeping service is a stopped ticker. A deployment therefore needs an external monitor pinging `/health` every 5 minutes, comfortably inside the ~15-minute idle window — both numbers are constants in [src/health/keep-warm.ts](src/health/keep-warm.ts) with a test over the relationship between them. Correctness does not rest on the ping arriving: both ticks fire on state rather than on events, so a missed ping delays sweep work instead of losing it ([test/deployment.int-spec.ts](test/deployment.int-spec.ts)).
 
 **Splitting the scheduler out is a deploy change.** `RUN_SCHEDULER` is the whole mechanism: set it `false` on the web service and add a second service with it `true`. Nothing in the code assumes co-location — the drain claims with `SELECT … FOR UPDATE SKIP LOCKED` and the sweeps fire on set-once predicates, so running both is safe too.

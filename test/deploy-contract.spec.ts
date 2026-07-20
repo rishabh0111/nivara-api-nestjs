@@ -1,3 +1,4 @@
+import { load } from 'js-yaml';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { envSchema } from 'src/config/env.schema';
@@ -42,6 +43,44 @@ const OWNER_CREDENTIAL = 'MIGRATE_DATABASE_URL';
  * tests below cannot pass by being out of date with the thing they check.
  */
 const CONFIGURED_KEYS = Object.keys(envSchema._def.schema.shape);
+
+/**
+ * The release workflow, parsed rather than grepped.
+ *
+ * Everything else here compares strings, and says why. The workflow is the
+ * exception because what its assertions turn on is *shape* — which job is
+ * guarded on which other job's output — and a regex over two jobs' worth of
+ * YAML would be matching text that happens to sit near the thing it means to
+ * check. Once parsed, the step-order assertion above reads from the same tree,
+ * since a whole-file regex for step names could not tell the two jobs apart.
+ */
+type ReleaseWorkflow = {
+  jobs: Record<
+    string,
+    {
+      needs?: string | string[];
+      if?: string;
+      outputs?: Record<string, string>;
+      steps: {
+        name?: string;
+        id?: string;
+        run?: string;
+        env?: Record<string, string>;
+      }[];
+    }
+  >;
+};
+
+const workflow = load(releaseWorkflow) as ReleaseWorkflow;
+
+/** The job that decides whether this repository has a deployment at all. */
+const gate = workflow.jobs['configured'];
+
+/** The job that migrates and then asks for the deploy. */
+const release = workflow.jobs['release'];
+
+/** The gate's shell — the only step in it that runs anything. */
+const check = gate?.steps.find((step) => step.run)?.run ?? '';
 
 /** The keys the blueprint actually declares, as opposed to merely mentions. */
 const declaredInBlueprint = new Set(
@@ -88,11 +127,78 @@ describe('the deployment contract', () => {
       // a failed migration cannot be followed by a deploy. Compared by step
       // name rather than by command, because both strings also appear in the
       // file's opening commentary — where their order means nothing.
-      const steps = [...releaseWorkflow.matchAll(/^ +- name: (.+)$/gm)].map(
-        ([, name]) => name,
-      );
+      const steps = release.steps
+        .map((step) => step.name)
+        .filter((name) => name !== undefined);
 
       expect(steps).toEqual(['Apply migrations', 'Trigger the deploy']);
+    });
+  });
+
+  /**
+   * A clone of this repository has no deployment, and that is a supported
+   * state rather than a broken one — the same terms every optional integration
+   * is on. Absent configuration leaves the capability dormant; it is never
+   * fatal.
+   *
+   * The workflow said exactly that in prose and did not do it, which is what
+   * these exist to hold. The argument for each rule is beside the rule, in
+   * `.github/workflows/release.yml`.
+   */
+  describe('a repository with no deployment configured', () => {
+    it('gates the whole release on the secrets existing', () => {
+      // Structural, and it has to be: the guarantee is that *nothing*
+      // effectful can run ahead of the check, which is a property of the job
+      // graph rather than of any step. The `secrets` context is unavailable in
+      // an `if:`, so the check has to be a job that reads them and reports.
+      expect(Object.keys(gate.outputs ?? {})).toEqual(['configured']);
+      expect([release.needs].flat()).toContain('configured');
+      expect(release.if).toContain('needs.configured.outputs.configured');
+
+      // And nothing gates the gate, or the check could not run to say no.
+      expect(gate.if).toBeUndefined();
+    });
+
+    it('decides on both secrets, so neither can be forgotten silently', () => {
+      // Reading them into the step's environment rather than interpolating
+      // them into the script: an expression expanded into shell would put a
+      // connection string in the command line, and a secret with a quote in it
+      // would be a syntax error at best.
+      const supplied = Object.values(gate.steps[0].env ?? {}).join(' ');
+
+      expect(supplied).toContain('secrets.MIGRATE_DATABASE_URL');
+      expect(supplied).toContain('secrets.RENDER_DEPLOY_HOOK_URL');
+    });
+
+    /**
+     * The three outcomes, read off the script rather than run.
+     *
+     * Shallow, and deliberately: executing it would make the suite depend on a
+     * POSIX shell being present, which is a new requirement on a developer's
+     * machine for four lines of `if`. What that costs is guarded against
+     * below — each case pins the *condition* it fires under and not merely the
+     * presence of a line, because "contains `exit 1`" is satisfied by a script
+     * that does nothing else, and "contains `configured=false`" by one that
+     * never says true and quietly disables every deploy forever.
+     */
+    it('releases only when both secrets are present', () => {
+      expect(check).toMatch(
+        /if \[ -n "\$MIGRATE" \] && \[ -n "\$HOOK" \]; then\s+echo 'configured=true'/,
+      );
+    });
+
+    it('skips quietly when neither is', () => {
+      expect(check).toMatch(
+        /if \[ -z "\$MIGRATE" \] && \[ -z "\$HOOK" \]; then\s+echo 'configured=false'/,
+      );
+    });
+
+    it('fails a half-configured release rather than running half of it', () => {
+      // The one case that must not be quiet, and the only one left once the
+      // two above have returned — so it is asserted as the fall-through, which
+      // is the property that actually makes it unreachable by anything else.
+      expect(check.trimEnd().endsWith('exit 1')).toBe(true);
+      expect(check).toContain('::error::');
     });
   });
 
