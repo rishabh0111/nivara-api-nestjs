@@ -18,9 +18,20 @@ import { envSchema } from 'src/config/env.schema';
  * service costs the whole tenant-isolation guarantee, and neither shows up in a
  * test that boots the application.
  *
- * They are string comparisons over configuration files, which makes them
- * shallow, and shallow is the right depth: each one restates a decision that
- * has an argument written beside it in the file it reads.
+ * ### What this file can no longer see
+ *
+ * The deployed service is created by hand in a platform dashboard, so its
+ * settings live in no file and nothing here can read them. Four things that
+ * were once asserted are now the runbook's to state and an operator's to set:
+ * the health check path, that automatic deploys stay off, that every key the
+ * schema reads is present, and that no value is a literal secret. That is the
+ * real cost of configuring a deployment by hand, and it is written down rather
+ * than quietly absorbed — see `docs/deployment-runbook.md`, which carries them
+ * as a checklist because a checklist is what is left once a test cannot help.
+ *
+ * What survives here is everything expressible in the repository itself, which
+ * is still the whole of the role split: the credential is a CI secret, the
+ * entrypoint strips it, and the application refuses to boot holding one.
  */
 
 const root = join(__dirname, '..');
@@ -28,7 +39,6 @@ const read = (name: string) => readFileSync(join(root, name), 'utf8');
 
 const dockerfile = read('Dockerfile');
 const compose = read('docker-compose.yml');
-const blueprint = read('render.yaml');
 const envExample = read('.env.example');
 const gitignore = read('.gitignore');
 const releaseWorkflow = read('.github/workflows/release.yml');
@@ -39,8 +49,8 @@ const OWNER_CREDENTIAL = 'MIGRATE_DATABASE_URL';
 /**
  * Every key the application reads, from the schema that reads them.
  *
- * Derived rather than listed, so the two "is this key documented / deployed"
- * tests below cannot pass by being out of date with the thing they check.
+ * Derived rather than listed, so the "is this key documented" test below cannot
+ * pass by being out of date with the thing it checks.
  */
 const CONFIGURED_KEYS = Object.keys(envSchema._def.schema.shape);
 
@@ -51,8 +61,8 @@ const CONFIGURED_KEYS = Object.keys(envSchema._def.schema.shape);
  * exception because what its assertions turn on is *shape* — which job is
  * guarded on which other job's output — and a regex over two jobs' worth of
  * YAML would be matching text that happens to sit near the thing it means to
- * check. Once parsed, the step-order assertion above reads from the same tree,
- * since a whole-file regex for step names could not tell the two jobs apart.
+ * check. Once parsed, the step assertion reads from the same tree, since a
+ * whole-file regex for step names could not tell the two jobs apart.
  */
 type ReleaseWorkflow = {
   jobs: Record<
@@ -76,18 +86,11 @@ const workflow = load(releaseWorkflow) as ReleaseWorkflow;
 /** The job that decides whether this repository has a deployment at all. */
 const gate = workflow.jobs['configured'];
 
-/** The job that migrates and then asks for the deploy. */
+/** The job that applies the migrations. */
 const release = workflow.jobs['release'];
 
 /** The gate's shell — the only step in it that runs anything. */
 const check = gate?.steps.find((step) => step.run)?.run ?? '';
-
-/** The keys the blueprint actually declares, as opposed to merely mentions. */
-const declaredInBlueprint = new Set(
-  [...blueprint.matchAll(/^\s*- key: ([A-Z][A-Z0-9_]*)/gm)].map(
-    ([, key]) => key,
-  ),
-);
 
 describe('the deployment contract', () => {
   describe('migrate-then-boot', () => {
@@ -114,24 +117,20 @@ describe('the deployment contract', () => {
       expect(dockerfile).not.toMatch(/CMD .*migrate/);
     });
 
-    it('lets nothing but the release deploy, so the order cannot be lost', () => {
-      // The free tier has no pre-deploy hook, so the ordering is imposed by the
-      // release workflow migrating and only then calling the deploy hook. That
-      // holds only while a push cannot deploy on its own: with `autoDeploy` on,
-      // the two would race and the winner would decide whether the new instance
-      // met the schema it was built for.
-      expect(blueprint).toMatch(/^\s*autoDeploy: false/m);
-      expect(releaseWorkflow).toContain('RENDER_DEPLOY_HOOK_URL');
-
-      // And the deploy is a later step than the migration in the same job, so
-      // a failed migration cannot be followed by a deploy. Compared by step
-      // name rather than by command, because both strings also appear in the
-      // file's opening commentary — where their order means nothing.
+    it('migrates and stops, leaving the deploy to a person', () => {
+      // The ordering is imposed by the release job doing strictly less than it
+      // could: it applies the schema and ends, and the deploy is a deliberate
+      // manual act afterwards. Nothing races because nothing here can deploy.
+      //
+      // Asserted as the *whole* list rather than as a membership check, because
+      // the failure this guards against is a step being appended — a deploy
+      // hook re-added here would deploy on every green migration, which is
+      // precisely the automatic deploy that was taken out.
       const steps = release.steps
         .map((step) => step.name)
         .filter((name) => name !== undefined);
 
-      expect(steps).toEqual(['Apply migrations', 'Trigger the deploy']);
+      expect(steps).toEqual(['Apply migrations']);
     });
   });
 
@@ -146,11 +145,11 @@ describe('the deployment contract', () => {
    * `.github/workflows/release.yml`.
    */
   describe('a repository with no deployment configured', () => {
-    it('gates the whole release on the secrets existing', () => {
+    it('gates the migration on the secret existing', () => {
       // Structural, and it has to be: the guarantee is that *nothing*
       // effectful can run ahead of the check, which is a property of the job
       // graph rather than of any step. The `secrets` context is unavailable in
-      // an `if:`, so the check has to be a job that reads them and reports.
+      // an `if:`, so the check has to be a job that reads it and reports.
       expect(Object.keys(gate.outputs ?? {})).toEqual(['configured']);
       expect([release.needs].flat()).toContain('configured');
       expect(release.if).toContain('needs.configured.outputs.configured');
@@ -159,63 +158,58 @@ describe('the deployment contract', () => {
       expect(gate.if).toBeUndefined();
     });
 
-    it('decides on both secrets, so neither can be forgotten silently', () => {
-      // Reading them into the step's environment rather than interpolating
-      // them into the script: an expression expanded into shell would put a
-      // connection string in the command line, and a secret with a quote in it
-      // would be a syntax error at best.
+    it('decides on the secret it actually needs', () => {
+      // Read into the step's environment rather than interpolated into the
+      // script: an expression expanded into shell would put a connection
+      // string in the command line, and a secret with a quote in it would be a
+      // syntax error at best.
       const supplied = Object.values(gate.steps[0].env ?? {}).join(' ');
 
-      expect(supplied).toContain('secrets.MIGRATE_DATABASE_URL');
-      expect(supplied).toContain('secrets.RENDER_DEPLOY_HOOK_URL');
+      expect(supplied).toContain(`secrets.${OWNER_CREDENTIAL}`);
     });
 
     /**
-     * The three outcomes, read off the script rather than run.
+     * Both outcomes, read off the script rather than run.
      *
      * Shallow, and deliberately: executing it would make the suite depend on a
      * POSIX shell being present, which is a new requirement on a developer's
      * machine for four lines of `if`. What that costs is guarded against
      * below — each case pins the *condition* it fires under and not merely the
-     * presence of a line, because "contains `exit 1`" is satisfied by a script
-     * that does nothing else, and "contains `configured=false`" by one that
-     * never says true and quietly disables every deploy forever.
+     * presence of a line, because "contains `configured=false`" is satisfied by
+     * a script that never says true and quietly disables every migration
+     * forever.
      */
-    it('releases only when both secrets are present', () => {
+    it('migrates when the secret is present', () => {
       expect(check).toMatch(
-        /if \[ -n "\$MIGRATE" \] && \[ -n "\$HOOK" \]; then\s+echo 'configured=true'/,
+        /if \[ -n "\$MIGRATE" \]; then\s+echo 'configured=true'/,
       );
     });
 
-    it('skips quietly when neither is', () => {
-      expect(check).toMatch(
-        /if \[ -z "\$MIGRATE" \] && \[ -z "\$HOOK" \]; then\s+echo 'configured=false'/,
-      );
-    });
-
-    it('fails a half-configured release rather than running half of it', () => {
-      // The one case that must not be quiet, and the only one left once the
-      // two above have returned — so it is asserted as the fall-through, which
-      // is the property that actually makes it unreachable by anything else.
-      expect(check.trimEnd().endsWith('exit 1')).toBe(true);
-      expect(check).toContain('::error::');
+    it('skips quietly when it is not', () => {
+      expect(check).toMatch(/else\s+echo 'configured=false'/);
+      expect(check).toContain('::notice::');
     });
   });
 
   describe('the two database roles', () => {
-    it('never gives the deployed service the owner credential at all', () => {
+    it('keeps the owner credential to the release step alone', () => {
       // The primary mechanism, and the strongest form the guarantee takes: the
       // credential belongs to the release step, which runs in CI and holds it
       // as a secret there. The deployed service cannot bypass row-level
       // security because there is nothing in its environment to bypass it with.
-      expect(declaredInBlueprint).not.toContain(OWNER_CREDENTIAL);
+      //
+      // Only half of this is checkable now. That the workflow holds the
+      // credential is asserted here; that the service does not is a dashboard
+      // full of variables no test can read, which is why the two belts below
+      // matter more than they used to rather than less.
       expect(releaseWorkflow).toContain(OWNER_CREDENTIAL);
     });
 
     it('strips it from the process anyway, in case somebody adds it', () => {
-      // Second belt. A variable added in the platform's dashboard appears in
-      // no file this test can read, so the entrypoint is what holds then —
-      // `node` is `exec`d with an environment that never contained it.
+      // Second belt, and now the first line of defence in practice. A variable
+      // added in the platform's dashboard appears in no file this test can
+      // read, so the entrypoint is what holds — `node` is `exec`d with an
+      // environment that never contained it.
       expect(dockerfile).toMatch(
         new RegExp(`CMD .*env -u ${OWNER_CREDENTIAL} .*node dist/main`),
       );
@@ -258,8 +252,10 @@ describe('the deployment contract', () => {
   describe('configuration', () => {
     it('documents every key the application reads', () => {
       // `.env.example` is the only description of the configuration surface
-      // anyone deploying this will read. A key added to the schema and not to
-      // the file is invisible until something fails to start.
+      // anyone deploying this will read — and with no blueprint in the
+      // repository it is now the *only* list of what a deployment must be
+      // given. A key added to the schema and not to the file is invisible
+      // until something fails to start.
       const documented = new Set(
         [...envExample.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)].map(([, key]) => key),
       );
@@ -269,79 +265,42 @@ describe('the deployment contract', () => {
       }
     });
 
-    it('declares the same keys in the deployment blueprint', () => {
-      // The blueprint is what a fresh deployment is created from, so a key
-      // missing there is a capability that is off in production and on
-      // everywhere else — including in the head of whoever wrote the schema.
-      //
-      // Two keys are deliberately absent, for opposite reasons. `PORT` is the
-      // platform's to set — the service is handed a port to listen on, and a
-      // blueprint naming one would be arguing with it. The owner credential is
-      // absent because the whole role split rests on it being absent; the test
-      // above asserts that directly.
-      const deliberatelyAbsent = ['PORT', OWNER_CREDENTIAL];
-
-      // A declaration, not a mention. Most of these keys also appear in the
-      // blueprint's comments, so a substring search would report the file
-      // complete while it declared nothing at all.
-      for (const key of CONFIGURED_KEYS) {
-        if (deliberatelyAbsent.includes(key)) continue;
-
-        expect([key, declaredInBlueprint.has(key)]).toEqual([key, true]);
-      }
-    });
-
-    it('commits no secret values', () => {
-      // Nothing real in git: the blueprint declares that a variable exists and
-      // the value is supplied out of band.
-      // `\r?\n` because a checkout on Windows may carry CRLF, and a regex that
-      // silently matched nothing would make this test pass by finding no
-      // secrets to object to — the exact failure mode it exists to catch.
-      const declarations = [
-        ...blueprint.matchAll(/- key: ([A-Z_]+)\r?\n\s+(\w+): ?(.*)/g),
-      ];
-
-      const secrets = declarations.filter(([, key]) =>
-        /SECRET|TOKEN|URL/.test(key),
-      );
-
-      expect(secrets.length).toBeGreaterThan(0);
-
-      for (const [, key, field] of secrets) {
-        expect([key, field]).toEqual([
-          key,
-          expect.stringMatching(/sync|generateValue/),
-        ]);
-      }
-    });
-
     it('keeps the real .env out of the repository', () => {
       expect(gitignore).toMatch(/^\.env$/m);
+    });
+
+    it('commits no platform blueprint that could carry a credential', () => {
+      // The deployment is configured by hand, which is a choice with a cost —
+      // see this file's opening note. This is the compensating benefit, and
+      // asserting it keeps the trade honest: with no blueprint there is no file
+      // in git that a connection string can be pasted into, and the class of
+      // mistake where a credential is committed to a public repository as
+      // "configuration" cannot happen here.
+      expect(() => read('render.yaml')).toThrow();
     });
   });
 
   describe('the scheduler split', () => {
     it('is a flag in the deployment, not a branch in the code', () => {
       // Moving the ticker to its own always-on service means setting this to
-      // false here and adding a second service with it true. The claim that it
-      // is a deploy change rather than a rewrite is only true while the flag is
-      // the whole of the mechanism.
-      expect(blueprint).toContain('RUN_SCHEDULER');
+      // false on the web service and adding a second service with it true. The
+      // claim that it is a deploy change rather than a rewrite is only true
+      // while the flag is the whole of the mechanism.
       expect(envExample).toMatch(/^RUN_SCHEDULER=/m);
     });
   });
 
   describe('health', () => {
-    it('points the platform health check at liveness, never readiness', () => {
+    it('points the compose health check at liveness, never readiness', () => {
       // Failing this check restarts the instance, and readiness reports
       // conditions that are not reasons to restart — a database blip resolves
       // itself, and a restart during one kills the process that would have
       // recovered.
-      expect(blueprint).toContain('healthCheckPath: /health');
-      expect(blueprint).not.toContain('healthCheckPath: /health/ready');
-    });
-
-    it('does the same in compose, for the same reason', () => {
+      //
+      // The deployed health check is a dashboard field now, so compose is the
+      // only place this is still enforceable. It is also the place a reader
+      // looks to find out what the deployed one should say, which is why the
+      // runbook quotes this path rather than inventing one.
       expect(compose).toContain('localhost:3000/health');
       expect(compose).not.toContain('localhost:3000/health/ready');
     });

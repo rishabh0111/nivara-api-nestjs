@@ -1,41 +1,39 @@
-# The release step, and the trigger for the deploy that follows it.
+# The release step: apply the migrations, and stop there.
 #
-# This is where migrate-then-boot is enforced on the free tier. The platform's
-# own pre-deploy hook is a paid feature, so the ordering cannot be bought from
-# it — but the ordering is the contract, not the hook, and a job that migrates
-# and only then asks for a deploy keeps the contract exactly.
+# Deploying is a button somebody presses in the platform dashboard, on purpose.
+# What is automated here is the half that must not be done by hand — applying
+# the schema, from one place, with one credential, one run at a time.
 #
-# It also *improves* the credential story it was working around. The owner role
-# is needed by this job and by nothing else, so it lives here and is absent from
-# the deployed service altogether — not supplied and then stripped, but never
-# supplied. The service holds no credential that can bypass row-level security
-# because there is none in its environment to hold.
+# Migrate-then-boot still holds, and now it holds for a simpler reason. This
+# runs on a push to `main`; the deploy that follows is a deliberate manual act
+# afterwards. Nothing races because nothing else can deploy — there is no
+# blueprint, no deploy hook, and no automatic deploy to get there first.
 #
-# Two secrets make this run, and it is inert until both are set:
+# The owner role is needed by this job and by nothing else, so it lives here and
+# is absent from the deployed service altogether — not supplied and then
+# stripped, but never supplied. The service holds no credential that can bypass
+# row-level security because there is none in its environment to hold.
+#
+# One secret makes this run, and it is inert until that secret is set:
 #
 #   MIGRATE_DATABASE_URL   the owner role, over the direct (unpooled) endpoint
-#   RENDER_DEPLOY_HOOK_URL the deploy hook from the service's dashboard
 #
 # Inert means skipped, not failed. A clone of this repository has no deployment
 # and that is a supported state, on the same terms as every optional integration
 # — absent configuration leaves a capability dormant rather than fatal. So the
-# release is gated on a job that reads the secrets and reports whether there is
-# a deployment to release to, because the `secrets` context is not available in
-# an `if:` and cannot gate anything directly.
-#
-# `autoDeploy` is off in render.yaml, which is what makes this the only path a
-# deploy can take. With it on, a push would deploy immediately and race the
-# migration it depends on — the exact ordering this file exists to impose.
+# migration is gated on a job that reads the secret and reports whether there is
+# a database to migrate at all, because the `secrets` context is not available
+# in an `if:` and cannot gate anything directly.
 
 name: Release
 
 on:
   push:
     branches: [main]
-  # Deploying a commit that is already on main, without pushing another one.
+  # Migrating a commit that is already on main, without pushing another one.
   workflow_dispatch:
 
-# One release at a time. Two overlapping runs would migrate the same database
+# One migration at a time. Two overlapping runs would migrate the same database
 # concurrently, which is the race that keeping migrations out of application
 # boot was meant to avoid in the first place.
 concurrency:
@@ -43,10 +41,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Is there a deployment to release to? Its own job because that is the only
-  # shape that can answer before anything effectful runs — the release job's
-  # `if:` reads this output, so a repository with no secrets skips the release
-  # entirely rather than checking out, installing, and then declining.
+  # Is there a database to migrate? Its own job because that is the only shape
+  # that can answer before anything effectful runs — the release job's `if:`
+  # reads this output, so a repository with no secret skips entirely rather than
+  # checking out, installing, and then declining.
   configured:
     runs-on: ubuntu-latest
 
@@ -54,33 +52,20 @@ jobs:
       configured: ${{ steps.check.outputs.configured }}
 
     steps:
-      - name: Look for the release secrets
+      - name: Look for the release secret
         id: check
         env:
           # Read into the environment rather than interpolated into the script:
           # an expression expanded into shell puts the value in the command
           # line, where a quote in a connection string is a syntax error.
           MIGRATE: ${{ secrets.MIGRATE_DATABASE_URL }}
-          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          if [ -n "$MIGRATE" ] && [ -n "$HOOK" ]; then
+          if [ -n "$MIGRATE" ]; then
             echo 'configured=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -z "$MIGRATE" ] && [ -z "$HOOK" ]; then
+          else
             echo 'configured=false' >> "$GITHUB_OUTPUT"
-            echo '::notice::No deployment configured. Set MIGRATE_DATABASE_URL and RENDER_DEPLOY_HOOK_URL to release; skipping.'
-            exit 0
+            echo '::notice::No deployment configured. Set MIGRATE_DATABASE_URL to apply migrations; skipping.'
           fi
-
-          # One without the other is somebody midway through setting this up,
-          # and both halves are dangerous alone: migrating without deploying
-          # advances the schema out from under the running instance, and
-          # deploying without migrating boots one against a schema that never
-          # arrived. Neither is a thing to do quietly.
-          echo '::error::Half-configured release. Set both MIGRATE_DATABASE_URL and RENDER_DEPLOY_HOOK_URL, or neither.'
-          exit 1
 
   release:
     needs: configured
@@ -101,15 +86,11 @@ jobs:
       - run: npm ci --ignore-scripts
 
       # The same command local compose runs, against the deployed database.
+      #
+      # This job ends here. A failed migration leaves the running instance alone
+      # against the schema it was built for, and a successful one leaves a
+      # migrated database waiting for a deploy that a person triggers.
       - name: Apply migrations
         env:
           MIGRATE_DATABASE_URL: ${{ secrets.MIGRATE_DATABASE_URL }}
         run: npm run release
-
-      # Only now, and only if the migration exited zero. A failed migration
-      # leaves the currently deployed instance running against the schema it was
-      # built for, which is the right thing for it to do.
-      - name: Trigger the deploy
-        env:
-          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: curl --fail --silent --show-error "$HOOK"

@@ -2,7 +2,6 @@
 
 A multitenant, two-sided customer-support helpdesk API. Every record belongs to exactly one Tenant, and tenant identity is always server-determined — read from the auth token or channel context, never from client input.
 
-
 ## Running it
 
 ```bash
@@ -137,7 +136,7 @@ npm run openapi:emit  # writes openapi.json
 
 Tests run at two seams: the booted application driven over its public protocols (Supertest for HTTP), and a directly-invokable scheduler tick. Tests do not mock the data layer. The load-bearing invariants in this system live in SQL rather than in application code, so a test that mocks Postgres proves nothing about them.
 
-There is one deliberate exception, [test/deploy-contract.spec.ts](test/deploy-contract.spec.ts), which reads the Dockerfile, the compose file and the deployment blueprint as text. What it asserts — that the owner credential is absent from the running process, that `.env.example` documents every key — is not a property of any running process, and the way each of them breaks is a line added to a file nothing reads until a deploy.
+There is one deliberate exception, [test/deploy-contract.spec.ts](test/deploy-contract.spec.ts), which reads the Dockerfile, the compose file and the release workflow as text. What it asserts — that the owner credential is absent from the running process, that `.env.example` documents every key — is not a property of any running process, and the way each of them breaks is a line added to a file nothing reads until a deploy.
 
 Every suite that touches the database runs **in band**, one at a time. They share one Postgres and one seed, and several of them assert over rows they did not create — a Ticket count, a job left undrained. Under Jest's default parallelism those assertions are races that pass or fail on worker scheduling, which is the worst kind of red: it appears when an unrelated suite is added and disappears when the file is run alone. `test:unit` stays parallel, because it opens no connection and has nothing to race against.
 
@@ -151,17 +150,21 @@ Entirely environment-driven. [.env.example](.env.example) documents every key; n
 
 ## Deployment
 
-The image that runs locally is the image that deploys. [render.yaml](render.yaml) is the platform glue and the only file that knows which platform this is; everything it configures — migrate-then-boot, the role split wired by environment, the liveness/readiness split, the scheduler flag — is framework- and platform-neutral.
+The image that runs locally is the image that deploys, and **no file in this repository names a platform**. The deployment is a container that wants a `DATABASE_URL`, an optional `REDIS_URL`, two signing secrets, and a port — which is a description any container host satisfies. Everything the deployment relies on — migrate-then-boot, the role split wired by environment, the liveness/readiness split, the scheduler flag — is framework- and platform-neutral, so porting is a matter of pointing a different host at the same image.
+
+There was a `render.yaml` here once. It was removed deliberately: it pinned a region, it named a vendor, and it put a file in a public repository whose whole purpose was to hold configuration — the one shape of file a credential gets pasted into by accident. The service is created by hand instead, and what to set is written down in the runbook rather than encoded in a file only one platform can read.
 
 **Migrations run as a release step, never at boot.** `npm run release` applies them, and it is the same command local compose runs, so a migration that works locally is evidence about the deploy rather than a hope. Migrating at boot would race two instances against one database and would require the owner credential inside the long-running process.
 
-The step lives in [.github/workflows/release.yml](.github/workflows/release.yml) rather than in a platform pre-deploy hook, because pre-deploy hooks are a paid feature and this deploys on the free tier. The workflow migrates and only then calls the service's deploy hook; `autoDeploy` is off in the blueprint, so that is the only path a deploy can take and a push cannot race the migration it depends on. A failed migration leaves the running instance alone, against the schema it was built for.
+The step lives in [.github/workflows/release.yml](.github/workflows/release.yml), which applies the schema on a push to `main` and then stops. **Deploying is a manual action.** That is what keeps the ordering honest without a pre-deploy hook, which is a paid feature on most free tiers: the migration has already run and finished by the time anybody presses deploy, so nothing races. A failed migration leaves the running instance alone, against the schema it was built for, and no deploy follows it.
 
 **The two roles are wired by environment.** The release step gets `MIGRATE_DATABASE_URL` — the owner, over the direct endpoint — and the running process gets `DATABASE_URL`, the non-`BYPASSRLS` `app_user` over the pooled one. It needs no direct connection: tenant context is transaction-local, so it is safe under transaction-mode pooling.
 
 Because the release step runs in CI, the owner credential is a CI secret and the deployed service is never given one at all — the strongest form the guarantee takes. Two cheaper belts sit under it: the image entrypoint `env -u`s the variable before `exec`ing node, and the application refuses to boot in production if it ever finds one.
 
-Deploying needs two secrets set on the repository — `MIGRATE_DATABASE_URL` and `RENDER_DEPLOY_HOOK_URL` — and the workflow is inert until both exist. Inert means *skipped*, not failed: a clone with no deployment is a supported state on the same terms as every optional integration, and a red X meaning "you have not configured something optional" costs the signal on the one that means something broke. Exactly one of the two is the case that does fail, loudly — migrating without deploying advances the schema out from under the running instance, and deploying without migrating boots one against a schema that never arrived.
+Releasing needs one secret set on the repository, `MIGRATE_DATABASE_URL`, and the workflow is inert until it exists. Inert means *skipped*, not failed: a clone with no deployment is a supported state on the same terms as every optional integration, and a red X meaning "you have not configured something optional" costs the signal on the one that means something broke.
+
+**What a hand-made deployment gives up.** Four things a blueprint could assert and a dashboard cannot — the health check path, that automatic deploys stay off, that every key the schema reads is actually set, and that no value is a literal secret. These are now an operator's to get right, and they are written down as a checklist rather than quietly dropped. The role split does not depend on any of them: the owner credential is a CI secret, the entrypoint strips it, and the application refuses to boot holding one.
 
 **Two health endpoints, and they are not interchangeable.**
 
@@ -175,3 +178,5 @@ Redis is reported on readiness but never fails it: it fails open everywhere it i
 **Keep-warm.** The free tier sleeps an idle service, and the scheduler runs in-process, so a sleeping service is a stopped ticker. A deployment therefore needs an external monitor pinging `/health` every 5 minutes, comfortably inside the ~15-minute idle window — both numbers are constants in [src/health/keep-warm.ts](src/health/keep-warm.ts) with a test over the relationship between them. Correctness does not rest on the ping arriving: both ticks fire on state rather than on events, so a missed ping delays sweep work instead of losing it ([test/deployment.int-spec.ts](test/deployment.int-spec.ts)).
 
 **Splitting the scheduler out is a deploy change.** `RUN_SCHEDULER` is the whole mechanism: set it `false` on the web service and add a second service with it `true`. Nothing in the code assumes co-location — the drain claims with `SELECT … FOR UPDATE SKIP LOCKED` and the sweeps fire on set-once predicates, so running both is safe too.
+
+**Region is a deployment choice, not a repository one.** Nothing here pins one. Pick the region nearest your users at creation time and note that most platforms — including the ones this was first deployed on — cannot change it afterwards, so it is a one-shot decision that a config file has no business making on your behalf.
