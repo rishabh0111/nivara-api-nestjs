@@ -50,6 +50,19 @@ services:
       # migration itself would run just as well in the runtime image, and does
       # — that is what the deployed pre-deploy hook runs.
       target: build
+    # Rebuild rather than reuse whatever image happens to be lying around.
+    #
+    # Compose's default is `missing`: build once, then reuse forever. That is
+    # wrong for this service, because the image carries the migrations and the
+    # seed — so a stale one silently applies an old schema, or fails on a script
+    # that package.json has since grown. Both look like a broken database rather
+    # than a stale image, which is a bad hour for whoever hits it.
+    #
+    # The cost is a rebuild on every `up`, and the layer cache makes that a few
+    # seconds when nothing has changed. The promise this file makes is that
+    # `docker compose up` is the whole first run; a flag people have to know to
+    # add would make that promise conditional on knowing it.
+    pull_policy: build
     # `npm run release` is the identical command the deployed release step
     # runs, named once in package.json so the two cannot drift. Seeding is
     # local-only and sits outside it: the deployed release migrates and stops,
@@ -66,6 +79,10 @@ services:
 
   api:
     build: .
+    # For the same reason as `migrate` above: this image carries the compiled
+    # application, so a reused one serves whatever the source looked like the
+    # last time somebody happened to build it.
+    pull_policy: build
     ports:
       - '${PORT:-3000}:3000'
     environment:
