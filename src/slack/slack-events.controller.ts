@@ -19,7 +19,7 @@ import { SlackInboundService } from './slack-inbound.service';
  * Mounted per source rather than behind a generic `/webhooks/:id` dispatcher.
  * That is the difference between a webhook product and a source adapter: a
  * dispatcher would need a registry of endpoints, per-endpoint secrets and a
- * tenant-facing surface to manage them, which build ticket 10 ruled out. Each
+ * tenant-facing surface to manage them, which was ruled out. Each
  * adapter is instead a route and a signature descriptor, and the second one costs
  * exactly that.
  *

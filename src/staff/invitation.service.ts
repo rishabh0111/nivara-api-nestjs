@@ -61,8 +61,8 @@ export class InvitationService {
    * that tried to stamp another tenant's id would be refused by Postgres rather
    * than by this code remembering to check.
    *
-   * The User exists before any credential does — that is the shape ticket 03
-   * left room for with a nullable `passwordHash`, and it is why an invited
+   * The User exists before any credential does — that is the shape staff
+   * authentication left room for with a nullable `passwordHash`, and it is why an invited
    * person cannot sign in until they accept: there is nothing to compare a
    * password against.
    *

@@ -16,7 +16,7 @@ import { refuse } from './rate-limited';
  * guard, which is where this is registered.
  *
  * Uniform on purpose. Every principal kind gets the same budget, and there is
- * no per-route or per-scope variation, because ticket 18 deferred both. A table
+ * no per-route or per-scope variation, because the design deferred both. A table
  * of ceilings is easy to add and impossible to remove once clients depend on
  * the differences, so it waits until real traffic shows which endpoint actually
  * needs its own number.
@@ -46,7 +46,7 @@ export class RateLimitGuard implements CanActivate {
     // minting, the Slack endpoint. There is no per-principal budget to charge
     // because there is no principal, and the one public route that carries real
     // risk — Slack — has its own pre-trust limiter ahead of authentication
-    // entirely. The rest are covered by ticket 18's deliberate scope: this is
+    // entirely. The rest are outside this limiter's deliberate scope: this is
     // the authenticated ceiling.
     if (!principal) return true;
 

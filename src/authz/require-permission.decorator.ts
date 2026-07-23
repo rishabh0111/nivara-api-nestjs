@@ -50,8 +50,8 @@ export const RequiresPermission = (
  * credential a given operation even accepts.
  */
 export const RequiresPrincipalKind = (
-  // Drawn from the union rather than re-spelled, so the `service` arm ticket 12
-  // adds becomes namable here the moment it exists — and so this list cannot
+  // Drawn from the union rather than re-spelled, so the `service` arm that
+  // service tokens add becomes namable here the moment it exists — and so this list cannot
   // quietly fall behind the one the guard compares against.
   kind: RequestPrincipal['kind'],
 ): ReturnType<typeof applyDecorators> =>

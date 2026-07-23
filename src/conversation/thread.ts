@@ -13,7 +13,7 @@ import { TenantClient } from '../tenancy/tenancy.service';
  * What the two threads have in common, and nothing else.
  *
  * `MessageService` and `NoteService` are separate services over separate
- * tables, which is the guarantee ticket 08 is built on: a Note cannot come back
+ * tables, which is the guarantee the Note boundary is built on: a Note cannot come back
  * from a customer-visible read because it does not live where that read looks.
  * What they genuinely share is the vocabulary of a thread — how it sorts, how
  * long an entry may be, and the two refusals a ticket-scoped read and write

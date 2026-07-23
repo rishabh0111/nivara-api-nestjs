@@ -10,8 +10,8 @@ import { UserRole } from '../generated/prisma/client';
  * with one diff to review.
  *
  * This same vocabulary is the scope namespace for service tokens — a scope is
- * a permission drawn from here, not a parallel set of names to keep in sync
- * (ticket 12). A permission added here is therefore a candidate scope, and
+ * a permission drawn from here, not a parallel set of names to keep in sync.
+ * A permission added here is therefore a candidate scope, and
  * naming should read sensibly for a machine caller as well as a person.
  *
  * `resource:verb`, `snake`-free, stable. Permissions appear in the OpenAPI

@@ -12,7 +12,7 @@ import { TicketsController } from './tickets.controller';
  * the log. `TicketService` is exported because everything that happens *to* a
  * Ticket later (state transitions, messages, SLA clocks) reads one first.
  *
- * `RealtimeModule` arrived with ticket 13, and the direction of that dependency
+ * `RealtimeModule` arrived later, and the direction of that dependency
  * is the design: the queue announces what it did, and the socket knows nothing
  * about tickets. The reverse edge is what a `TicketService` inside the gateway
  * would have created — and it would have put the queue in the middle of a

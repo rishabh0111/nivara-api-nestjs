@@ -209,7 +209,7 @@ describe('the ticket state machine', () => {
     /**
      * The property that makes `closed` terminal rather than merely final-ish.
      * A Contact who replies to a closed Ticket gets a new linked Ticket
-     * (ticket 10) rather than this history revived.
+     * rather than this history revived.
      */
     it('refuses every move out of closed, including for an admin', async () => {
       const id = await ticketIn('closed');

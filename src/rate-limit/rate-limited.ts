@@ -33,7 +33,7 @@ export const refuse = (response: Response, decision: Denied): never => {
   // Set on the refusal only. Emitting them on every successful response would
   // let a client pace itself before being refused, which is the shape those
   // headers were designed for — but it means a Redis round trip's result on the
-  // hot path of every request, and ticket 18 asked for them on the 429. The
+  // hot path of every request, and the design asked for them on the 429. The
   // seam is here when that becomes worth it.
   response.setHeader('Retry-After', decision.retryAfterSeconds);
   response.setHeader('RateLimit-Limit', decision.limit);

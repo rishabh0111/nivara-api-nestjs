@@ -2,7 +2,7 @@
 -- SLA clocks, breach latches, and the activity stamp the dwell timers read
 -- ---------------------------------------------------------------------------
 --
--- The whole of ticket 15's arithmetic lives here rather than in a service,
+-- The whole of the SLA arithmetic lives here rather than in a service,
 -- because the load-bearing claim is that breach is a pure function of a single
 -- Ticket row. That claim is only worth anything if it holds for every writer:
 -- this API, the Spring and FastAPI ports, the sweep, and a psql session. An
@@ -25,7 +25,7 @@
 --
 -- Rows rather than a constant table in code, for query symmetry: breach
 -- evaluation is a join, so the targets have to be joinable, and analytics
--- (ticket 20) reads them the same way. Keyed on `(tenant, priority)` because
+-- reads them the same way. Keyed on `(tenant, priority)` because
 -- priority is the sole SLA input — state never selects a target, which is what
 -- makes the deadline predictable from the priority alone.
 --

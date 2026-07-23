@@ -395,7 +395,7 @@ describe('idempotency', () => {
   });
 
   describe('the non-HTTP consumer', () => {
-    // What ticket 17 will build inbound Slack `event_id` dedupe on. It shares
+    // What inbound Slack `event_id` dedupe is built on. It shares
     // the table and the scoping and uses none of the HTTP machinery — no header,
     // no route, and no response to cache — which is the whole reason `scope` is a
     // column rather than the route being the key.

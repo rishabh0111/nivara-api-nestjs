@@ -63,7 +63,7 @@ export const envSchema = z
     // right numbers are an operational question that will be answered by
     // watching real traffic, and the defaults are a starting point rather than
     // a considered limit. Deliberately *not* differentiated per route or per
-    // scope: one uniform ceiling is what ticket 18 asked for, and a
+    // scope: one uniform ceiling is what the design asked for, and a
     // per-endpoint table is speculative until something is actually observed
     // to need its own.
     RATE_LIMIT_AUTHENTICATED_PER_MINUTE: perMinute.default(300),

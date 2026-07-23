@@ -151,7 +151,8 @@ const isNonEmptyString = (value: unknown): value is string =>
  * the two below it: widget sessions are a real principal kind, but they are
  * signed by a different key and verified by `WidgetSessionService`, so a token
  * claiming `widget` on *this* key is one this server did not issue. `service`
- * is refused for the ordinary reason and becomes a third arm in ticket 12.
+ * is refused for the ordinary reason and becomes a third arm once service
+ * tokens land.
  */
 export const principalFromClaims = (
   claims: unknown,

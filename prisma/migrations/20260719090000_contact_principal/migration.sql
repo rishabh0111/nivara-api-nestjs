@@ -244,7 +244,7 @@ CREATE POLICY tenant_isolation ON "audit_log"
 --
 -- This is the third independent statement of the same guarantee, and the
 -- redundancy is the design. Notes live in a table the customer-visible read does
--- not name (ticket 08); `note:read` is not a permission any Contact can hold;
+-- not name; `note:read` is not a permission any Contact can hold;
 -- and now the rows are invisible to a Contact's context outright. Any one of the
 -- three would do on a good day. Together they mean that exposing a Note takes a
 -- new endpoint, a new grant, *and* a policy change — three deliberate acts, not

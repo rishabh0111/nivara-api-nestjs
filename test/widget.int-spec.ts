@@ -643,7 +643,7 @@ describe('widget sessions', () => {
     });
 
     /**
-     * The reply-reopen rule from ticket 10 is not reimplemented here — the
+     * The reply-reopen rule is not reimplemented here — the
      * widget calls the same `ContactReplyService` the portal does. This is the
      * check that it is genuinely the same path, and that a widget reply is
      * therefore not a second implementation waiting to disagree.

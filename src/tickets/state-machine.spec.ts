@@ -52,7 +52,7 @@ describe('canTransition', () => {
     /**
      * The permission and nothing else. A principal with no role at all — a
      * ServiceToken, a scheduler — is judged the same way, which is what keeps
-     * this from becoming a second authorization path when ticket 12 lands.
+     * this from becoming a second authorization path when service tokens land.
      */
     it('asks for the permission rather than for a role', () => {
       expect(

@@ -11,9 +11,9 @@ import { TicketState } from '../generated/prisma/client';
  * Deliberately *not* a database trigger, unlike the transition table it feeds.
  * A trigger sees the rows, and this decision needs what the rows do not carry:
  * which channel the reply arrived on, and the reply's body, which becomes the
- * spawned Ticket's first Message. Build ticket 18 settled the split the same way —
- * spawn *creation* is application logic; the *immutability* of what it writes is
- * schema-level.
+ * spawned Ticket's first Message. The linkage model settles the split the same
+ * way — spawn *creation* is application logic; the *immutability* of what it
+ * writes is schema-level.
  */
 export type ReplyOutcome =
   /** Post the Message and leave the Ticket where it is. */

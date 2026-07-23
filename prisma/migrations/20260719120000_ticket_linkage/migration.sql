@@ -10,7 +10,7 @@
 -- Two self-referencing pointers carry that, and no grouping entity above Ticket.
 -- A `Conversation` row is what you would reach for if Tickets could join a
 -- conversation *several* ways — agent-initiated merge, cross-channel identity
--- unification — and build ticket 18 ruled merge out of scope while the
+-- unification — and merge is ruled out of scope while the
 -- Contact identity-merge seam is deliberately still open. A grouping entity now
 -- would front-run that open decision rather than serve a settled one.
 --

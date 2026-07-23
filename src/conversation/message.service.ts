@@ -63,7 +63,7 @@ export class MessageService {
    * write cannot disagree about a Ticket that merely changed.
    *
    * Posting on a `closed` Ticket is not refused here. Whether a reply reopens a
-   * Ticket, starts a linked one, or is turned away is ticket 10's question, and
+   * Ticket, starts a linked one, or is turned away is the reply path's question, and
    * answering half of it now would mean a rule in this method that the reply
    * path then has to disagree with.
    */

@@ -7,7 +7,7 @@ import {
 } from './service-scopes';
 
 /**
- * The claim ticket 12 rests on: there is one authority vocabulary, not two.
+ * The claim service tokens rest on: there is one authority vocabulary, not two.
  *
  * These are assertions about data for the same reason the role-map tests are —
  * "no machine credential can ever hold `audit:read`" should be a property a

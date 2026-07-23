@@ -29,7 +29,7 @@ import { NotesController } from './notes.controller';
  * is where that stops being a convention. A future surface that wants Notes has
  * to add itself here, in a diff a reviewer sees.
  *
- * `TicketsModule` arrived with ticket 10, and the direction of that dependency
+ * `TicketsModule` arrived with ticket linkage, and the direction of that dependency
  * is the design: a Contact's reply can reopen or spawn a Ticket, so conversation
  * knows about tickets and tickets know nothing about conversation. The reverse
  * edge is what a Message hook inside the state machine would have created, and
@@ -42,8 +42,8 @@ import { NotesController } from './notes.controller';
  * module's own, and inheriting it transitively would make it disappear the day
  * the queue stopped needing it.
  *
- * `ContactReplyService` is exported for the portal and, since ticket 17, for
- * Slack ingestion — which joined on exactly the terms predicted, differing only
+ * `ContactReplyService` is exported for the portal and, since the Slack channel
+ * landed, for it too — which joined on exactly the terms predicted, differing only
  * in the Source it passes. A customer replying in a Slack thread and one replying
  * in the portal get the same reopen, the same spawn and the same one-live-per-
  * chain guarantee because they run the same method.

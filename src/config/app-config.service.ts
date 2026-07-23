@@ -53,8 +53,8 @@ export class AppConfigService {
    *
    * Together rather than as three accessors, because they are configured,
    * reasoned about and tuned as a set — and because a call site that wanted one
-   * of them in isolation would be a per-route limit, which ticket 18 explicitly
-   * deferred.
+   * of them in isolation would be a per-route limit, which the uniform-ceiling
+   * design explicitly deferred.
    *
    * Windowed at sixty seconds here rather than in the limiter, so the pairing of
    * a ceiling with the span it is measured over happens once. A limiter handed a

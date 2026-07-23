@@ -38,7 +38,7 @@
 --     `open`; "was this ever reopened" is an audit-log question.
 --   * `closed` is hard-terminal, reachable only from `resolved`, and no pair
 --     leads out of it. A Contact replying to a closed Ticket spawns a new
---     linked Ticket rather than reviving this one (ticket 10) — which is what
+--     linked Ticket rather than reviving this one — which is what
 --     makes "terminal" true rather than aspirational.
 --
 -- A separate function rather than an inline predicate, so the table is

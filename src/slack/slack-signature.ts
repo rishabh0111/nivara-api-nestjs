@@ -5,7 +5,7 @@ import { SignatureScheme } from '../integrations/signature-scheme';
  *
  * The whole of this adapter's crypto, and it is a constant rather than code
  * because the verifier is general over the descriptor — which is the property
- * ticket 17 asks for by name. A second source is a second object beside this one;
+ * the channel design asks for by name. A second source is a second object beside this one;
  * no branch in the verifier learns about it, and nothing here is reachable from a
  * place that could get the algorithm wrong.
  *

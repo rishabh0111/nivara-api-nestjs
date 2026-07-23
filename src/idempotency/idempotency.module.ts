@@ -12,7 +12,7 @@ import { IdempotencyService } from './idempotency.service';
  * importing anything.
  *
  * `IdempotencyService` is exported for both of its consumers: that interceptor,
- * and the inbound event dedupe that ticket 17 builds on the same table. The
+ * and the inbound event dedupe that Slack ingestion builds on the same table. The
  * second one wants only `claim()`, with a scope of its own and no response to
  * cache, which is exactly why the service speaks in tenant contexts and scopes
  * rather than in requests and routes.

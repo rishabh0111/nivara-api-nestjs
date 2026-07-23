@@ -131,7 +131,7 @@ describe('resolving a principal to permissions', () => {
   });
 
   /**
-   * The claim ticket 09 rests on: a Contact is not a weak agent.
+   * The claim the Contact principal rests on: a Contact is not a weak agent.
    *
    * Asserted over the *whole* catalog rather than against a handful of
    * interesting permissions, because the interesting ones are the ones nobody

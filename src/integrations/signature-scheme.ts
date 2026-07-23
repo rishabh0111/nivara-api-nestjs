@@ -4,7 +4,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * How one inbound source proves a request came from it.
  *
  * A descriptor rather than a Slack-shaped function, and the reason is written
- * into ticket 17 as a requirement: a second source must be *configuration* here
+ * into the Slack channel's design as a requirement: a second source must be
+ * *configuration* here
  * rather than new crypto code. Every provider's scheme is the same three moves —
  * take a timestamp and the raw bytes, build a string from them, HMAC it under a
  * shared secret — and they differ only in the header names, the separator, the

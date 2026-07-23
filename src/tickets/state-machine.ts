@@ -18,8 +18,8 @@ import { TicketState } from '../generated/prisma/client';
  * The parameter is a permission set rather than a role, which is the repo's
  * standing rule (`src/authz/permissions.ts`) and matters twice here. A
  * ServiceToken carries scopes and no role at all, so a `role === 'admin'` test
- * would misjudge the AI layer the moment ticket 12 lands; and a scheduler
- * closing Tickets on a dwell timer (ticket 15) has no User behind it either.
+ * would misjudge the AI layer the moment service tokens land; and a scheduler
+ * closing Tickets on a dwell timer has no User behind it either.
  * Both hold permissions, so both compose with this without a second
  * authorization path being invented for them.
  *
@@ -39,7 +39,7 @@ export const canTransition = (
   // Closing is the only transition with an authority attached, and the
   // asymmetry is real rather than ceremonial: `closed` is hard-terminal — no
   // transition leads out of it, and a later Contact reply spawns a fresh Ticket
-  // instead of reviving this one (ticket 10). Everything else an agent does is
+  // instead of reviving this one. Everything else an agent does is
   // reversible; this is not.
   if (to === TicketState.closed) return permissions.has('ticket:close');
 

@@ -12,7 +12,7 @@ import { WidgetSessionService } from './widget-session.service';
  * into `AuthModule` — and would close a cycle the moment either of those ever
  * wants something from auth.
  *
- * The split follows the same line ticket 12's service tokens will: what
+ * The split follows the same line service tokens will: what
  * *verifies a credential* is a leaf, and what *serves a surface* is not.
  */
 @Module({

@@ -173,7 +173,7 @@ CREATE INDEX "audit_log_tenant_id_ticket_id_created_at_id_idx"
 -- than a technicality — "history is kept forever" and "a Tenant can be erased"
 -- are incompatible, and this is where they meet. Nothing in this API deletes a
 -- Tenant, and tenant offboarding is the same open question as the admin
--- hard-delete → soft-delete tombstone that ADR/ticket 03 spun off; both want a
+-- hard-delete → soft-delete tombstone that staff authentication spun off; both want a
 -- deliberate answer rather than a cascade that quietly shreds the audit trail.
 ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_tenant_id_fkey"
   FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
