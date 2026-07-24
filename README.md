@@ -14,7 +14,7 @@ For a local run outside compose:
 
 ```bash
 npm install
-cp .env.example .env   # DATABASE_URL and JWT_SECRET are the required keys
+cp .env.example .env   # DATABASE_URL, JWT_SECRET and WIDGET_SESSION_SECRET are required
 docker compose up -d postgres
 npm run db:migrate && npm run db:seed
 npm run start:dev
@@ -128,7 +128,7 @@ Counters live in Redis and **fail open**. If Redis is unavailable the ceilings s
 ```bash
 npm run typecheck     # tsc --noEmit
 npm test              # everything — needs a migrated, seeded Postgres
-npm run test:unit     # the subset that opens no connection
+npm run test:unit     # everything but the isolation suites — still needs Postgres
 npm run test:int      # the isolation proof alone
 npm run lint
 npm run openapi:emit  # writes openapi.json
@@ -138,7 +138,7 @@ Tests run at two seams: the booted application driven over its public protocols 
 
 There is one deliberate exception, [test/deploy-contract.spec.ts](test/deploy-contract.spec.ts), which reads the Dockerfile, the compose file and the release workflow as text. What it asserts — that the owner credential is absent from the running process, that `.env.example` documents every key — is not a property of any running process, and the way each of them breaks is a line added to a file nothing reads until a deploy.
 
-Every suite that touches the database runs **in band**, one at a time. They share one Postgres and one seed, and several of them assert over rows they did not create — a Ticket count, a job left undrained. Under Jest's default parallelism those assertions are races that pass or fail on worker scheduling, which is the worst kind of red: it appears when an unrelated suite is added and disappears when the file is run alone. `test:unit` stays parallel, because it opens no connection and has nothing to race against.
+Every suite that touches the database runs **in band**, one at a time. They share one Postgres and one seed, and several of them assert over rows they did not create — a Ticket count, a job left undrained. Under Jest's default parallelism those assertions are races that pass or fail on worker scheduling, which is the worst kind of red: it appears when an unrelated suite is added and disappears when the file is run alone. `test:unit` stays parallel because what it drops is exactly those suites. It is not, despite the name, connectionless — six end-to-end specs in it boot the application, so it wants a Postgres too; what it leaves out is the isolation proof, not the database.
 
 That is why the `*.int-spec.ts` files are in the **default** run rather than behind an opt-in flag. They are the only thing that demonstrates isolation actually holds, and they connect as `app_user` — point them at the owner instead and every one of their assertions collapses. A suite that stayed green while RLS was disabled would be worse than no suite. `test:unit` exists for the tight loop, not as the thing CI runs.
 
@@ -152,7 +152,7 @@ Entirely environment-driven. [.env.example](.env.example) documents every key; n
 
 The image that runs locally is the image that deploys, and **no file in this repository names a platform**. The deployment is a container that wants a `DATABASE_URL`, an optional `REDIS_URL`, two signing secrets, and a port — which is a description any container host satisfies. Everything the deployment relies on — migrate-then-boot, the role split wired by environment, the liveness/readiness split, the scheduler flag — is framework- and platform-neutral, so porting is a matter of pointing a different host at the same image.
 
-There was a `render.yaml` here once. It was removed deliberately: it pinned a region, it named a vendor, and it put a file in a public repository whose whole purpose was to hold configuration — the one shape of file a credential gets pasted into by accident. The service is created by hand instead, and what to set is written down in the runbook rather than encoded in a file only one platform can read.
+**There is deliberately no platform blueprint.** A checked-in `render.yaml` or its equivalent pins a region, names a vendor, and puts a file whose entire purpose is to hold configuration into a public repository — the one shape of file a credential gets pasted into by accident. The service is created by hand instead, and [docs/deployment-runbook.md](docs/deployment-runbook.md) is where what-to-set is written down: prose any platform's dashboard can be driven from, rather than a format only one platform can read.
 
 **Migrations run as a release step, never at boot.** `npm run release` applies them, and it is the same command local compose runs, so a migration that works locally is evidence about the deploy rather than a hope. Migrating at boot would race two instances against one database and would require the owner credential inside the long-running process.
 
@@ -164,7 +164,7 @@ Because the release step runs in CI, the owner credential is a CI secret and the
 
 Releasing needs one secret set on the repository, `MIGRATE_DATABASE_URL`, and the workflow is inert until it exists. Inert means *skipped*, not failed: a clone with no deployment is a supported state on the same terms as every optional integration, and a red X meaning "you have not configured something optional" costs the signal on the one that means something broke.
 
-**What a hand-made deployment gives up.** Four things a blueprint could assert and a dashboard cannot — the health check path, that automatic deploys stay off, that every key the schema reads is actually set, and that no value is a literal secret. These are now an operator's to get right, and they are written down as a checklist rather than quietly dropped. The role split does not depend on any of them: the owner credential is a CI secret, the entrypoint strips it, and the application refuses to boot holding one.
+**What a hand-made deployment gives up.** Four things a blueprint could assert and a dashboard cannot — the health check path, that automatic deploys stay off, that every key the schema reads is actually set, and that no value is a literal secret. These are now an operator's to get right, and they are written down as a checklist in [the runbook](docs/deployment-runbook.md#the-settings-that-used-to-be-asserted-by-a-test) rather than quietly dropped. The role split does not depend on any of them: the owner credential is a CI secret, the entrypoint strips it, and the application refuses to boot holding one.
 
 **Two health endpoints, and they are not interchangeable.**
 
