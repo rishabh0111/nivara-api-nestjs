@@ -22,12 +22,12 @@ import { envSchema } from 'src/config/env.schema';
  *
  * The deployed service is created by hand in a platform dashboard, so its
  * settings live in no file and nothing here can read them. Four things that
- * were once asserted are now the runbook's to state and an operator's to set:
- * the health check path, that automatic deploys stay off, that every key the
- * schema reads is present, and that no value is a literal secret. That is the
- * real cost of configuring a deployment by hand, and it is written down rather
- * than quietly absorbed — see `docs/deployment-runbook.md`, which carries them
- * as a checklist because a checklist is what is left once a test cannot help.
+ * were once asserted are now an operator's to set: the health check path,
+ * that automatic deploys stay off, that every key the schema reads is
+ * present, and that no value is a literal secret. That is the real cost of
+ * configuring a deployment by hand, and it is named here rather than
+ * quietly absorbed — saying what a test no longer covers is the least it
+ * can do.
  *
  * What survives here is everything expressible in the repository itself, which
  * is still the whole of the role split: the credential is a CI secret, the
@@ -299,8 +299,8 @@ describe('the deployment contract', () => {
       //
       // The deployed health check is a dashboard field now, so compose is the
       // only place this is still enforceable. It is also the place a reader
-      // looks to find out what the deployed one should say, which is why the
-      // runbook quotes this path rather than inventing one.
+      // looks to find out what the deployed one should say, so this is the
+      // path to copy into the dashboard rather than inventing one.
       expect(compose).toContain('localhost:3000/health');
       expect(compose).not.toContain('localhost:3000/health/ready');
     });
