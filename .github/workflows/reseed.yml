@@ -1,0 +1,97 @@
+# Reseeding the deployed database, on purpose and by hand.
+#
+# The seed truncates every tenant before it writes — that is what makes "reset
+# to a known state" true rather than approximately true — so this workflow can
+# only ever be started by a person, and only by one who typed the word.
+#
+# It lives here for the same reason the release step does: seeding needs the
+# owner role, the owner role is a CI secret, and the deployed service is never
+# given one. A reseed endpoint on the API would need that credential inside the
+# running process, which is the single thing the whole role split exists to
+# prevent — so the button is here, where the credential already lives, instead.
+#
+# Three guards, in the order they fire:
+#
+#   1. `workflow_dispatch` only. No push, no schedule, no other workflow.
+#   2. The typed confirmation below. A stray click on the Run button does
+#      nothing, because the default is empty and empty is not the word.
+#   3. The secret has to exist. Unlike the release workflow, an absent one is
+#      an error here rather than a skip: nobody types "reseed" by accident, so
+#      silence would be the wrong answer to a request that was deliberate.
+
+name: Reseed
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "reseed" to confirm. This DELETES every tenant and everything in them.'
+        required: true
+        default: ''
+        type: string
+
+# Shared with `Release`, deliberately. A seed running while migrations are being
+# applied would be writing rows against a schema that is still moving.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  reseed:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Before the checkout, so a refusal costs nothing and touches nothing.
+      - name: Refuse without the typed confirmation
+        env:
+          # Read into the environment rather than interpolated into the script:
+          # a dispatch input is attacker-controlled text in the general case,
+          # and expanding one into a shell command line is how that becomes a
+          # shell injection rather than a mismatched string.
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "reseed" ]; then
+            echo '::error::Confirmation did not match. Type reseed exactly. Nothing was changed.'
+            exit 1
+          fi
+
+      - name: Require a database to seed
+        env:
+          MIGRATE: ${{ secrets.MIGRATE_DATABASE_URL }}
+        run: |
+          if [ -z "$MIGRATE" ]; then
+            echo '::error::No MIGRATE_DATABASE_URL secret is set, so there is no deployment to reseed.'
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Not `--ignore-scripts`, unlike the release step: the seed is TypeScript
+      # that imports the generated client, so `postinstall`'s `prisma generate`
+      # has to run, and `ts-node` has to be installed.
+      - run: npm ci
+
+      # The seed prints the minted service token in the clear, by design — it is
+      # the only place the raw value ever exists. That is right on a terminal
+      # and wrong in a job log, which on a public repository is a public page.
+      # So the token is redacted on its way through, and the AI layer gets its
+      # own credential from `POST /service-tokens` like any other admin would.
+      #
+      # `pipefail` because the seed's exit status is the one that matters and a
+      # pipe would otherwise report `sed`'s.
+      - name: Seed
+        env:
+          MIGRATE_DATABASE_URL: ${{ secrets.MIGRATE_DATABASE_URL }}
+        run: |
+          set -eo pipefail
+          npm run db:seed 2>&1 \
+            | sed -E 's/nvk_live_[A-Za-z0-9._-]+/nvk_live_[redacted — mint a fresh token via POST \/service-tokens]/g'
+
+      - name: Say what to do next
+        run: |
+          echo '::notice::Reseeded. Every service token was truncated, so the AI layer needs a new one: sign in as an admin and POST /service-tokens.'
