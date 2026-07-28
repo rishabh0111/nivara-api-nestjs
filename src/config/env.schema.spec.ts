@@ -187,6 +187,28 @@ describe('validateEnv', () => {
     });
   });
 
+  /**
+   * The list credentialed CORS is granted against, so its parsing is
+   * load-bearing rather than cosmetic. A blank entry surviving the split would
+   * reach an equality check as `""`, and the failure mode of that is an origin
+   * nobody configured being treated as one that was.
+   */
+  describe('the front-end origins', () => {
+    it('reads a comma-separated list, trimmed', () => {
+      expect(
+        validate({
+          WEB_ORIGINS: 'https://nivara-web.vercel.app, http://localhost:3000',
+        }).WEB_ORIGINS,
+      ).toEqual(['https://nivara-web.vercel.app', 'http://localhost:3000']);
+    });
+
+    it('reads absent, empty and blank alike as no origins at all', () => {
+      expect(validate().WEB_ORIGINS).toEqual([]);
+      expect(validate({ WEB_ORIGINS: '' }).WEB_ORIGINS).toEqual([]);
+      expect(validate({ WEB_ORIGINS: ' , ,' }).WEB_ORIGINS).toEqual([]);
+    });
+  });
+
   it('names every offending key at once', () => {
     expect(() => validate({ PORT: 'nope', NODE_ENV: 'staging' })).toThrow(
       /PORT[\s\S]*NODE_ENV|NODE_ENV[\s\S]*PORT/,

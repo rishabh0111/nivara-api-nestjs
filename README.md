@@ -146,6 +146,8 @@ That is why the `*.int-spec.ts` files are in the **default** run rather than beh
 
 Entirely environment-driven. [.env.example](.env.example) documents every key; nothing real is committed. Absence of an optional integration is a supported state. Half-configuring one is not — supplying a client id without its secret fails at boot rather than at the first callback.
 
+`WEB_ORIGINS` names the deployments of the front end, and is the only list this API answers with credentials — every other origin is echoed without them, which is what the widget needs and all it needs. A tenant's widget origins are not configured here: they live on the tenant row and are checked where the tenant is known, because a preflight carries no body to read a `tenantId` out of ([ADR-0003](docs/adr/0003-cors-split-by-credential-model.md)). An empty list grants credentials to nobody.
+
 `REDIS_URL` is optional on the same terms. Everything that uses it fails open, so a process without Redis serves every request correctly and simply enforces no rate limits — which is what keeps the credential-free first run working. The three `RATE_LIMIT_*_PER_MINUTE` ceilings are starting values, tunable per environment.
 
 ## Deployment

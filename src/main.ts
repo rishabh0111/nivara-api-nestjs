@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
+import { CorsOptionsDelegate } from '@nestjs/common/interfaces/external/cors-options.interface';
 import { NestFactory } from '@nestjs/core';
+import { Request } from 'express';
 import { AppModule } from './app.module';
+import { browserCorsPolicy } from './common/cors/browser-cors';
 import { AppConfigService } from './config/app-config.service';
 import { OPENAPI_PATH, setupOpenApi } from './openapi/document';
 
@@ -17,6 +20,19 @@ async function bootstrap(): Promise<void> {
   });
   const config = app.get(AppConfigService);
   const logger = new Logger('Bootstrap');
+
+  // Decided per request rather than once at boot, because the two kinds of
+  // browser caller this API serves need different answers and only one of them
+  // has an origin knowable in advance. `browserCorsPolicy` carries the
+  // reasoning; this delegate is the plumbing that reaches it.
+  const corsDelegate: CorsOptionsDelegate<Request> = (request, callback) => {
+    callback(
+      null,
+      browserCorsPolicy(request.headers.origin, config.webOrigins),
+    );
+  };
+
+  app.enableCors(corsDelegate);
 
   app.enableShutdownHooks();
 

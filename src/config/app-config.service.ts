@@ -150,6 +150,15 @@ export class AppConfigService {
     return this.get('SLACK_BOT_TOKEN');
   }
 
+  /**
+   * Deployments of the front end, and the only origins granted credentialed
+   * CORS. Empty means no browser front end is configured against this
+   * instance — a supported state, and not an invitation to reflect anything.
+   */
+  get webOrigins(): readonly string[] {
+    return this.get('WEB_ORIGINS');
+  }
+
   get isProduction(): boolean {
     return this.nodeEnv === 'production';
   }

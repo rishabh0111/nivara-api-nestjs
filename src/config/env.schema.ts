@@ -24,6 +24,26 @@ const port = z.coerce.number().int().min(1).max(65535);
 const perMinute = z.coerce.number().int().min(1);
 
 /**
+ * A comma-separated list of origins, read as an array.
+ *
+ * Empty and absent both mean an empty list rather than a fault, because "no
+ * browser front end is deployed against this instance" is a real deployment
+ * and not a misconfiguration. What it must never become is a list containing
+ * `""`: an empty entry that reached an equality check would match an origin
+ * header nobody sent, so blanks are dropped here rather than defended against
+ * at every call site.
+ */
+const originList = z
+  .string()
+  .optional()
+  .transform((value) =>
+    (value ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== ''),
+  );
+
+/**
  * Every configuration key the application reads.
  *
  * Two rules hold this together, and both are load-bearing for the promise that
@@ -108,6 +128,17 @@ export const envSchema = z
     // In-process scheduler. Off here, on in the deployed web service — the flag
     // is what keeps splitting the scheduler out a deploy change, not a rewrite.
     RUN_SCHEDULER: booleanish(false),
+
+    // Deployments of the front end, and the only origins this API will answer
+    // with credentials. Empty is a supported configuration: it means no
+    // browser front end is deployed against this instance, not that every
+    // origin is welcome.
+    //
+    // Deliberately *not* where a tenant's widget origins live. Those are per
+    // tenant, stored on the tenant row, and checked inside the bootstrap
+    // endpoint — a preflight carries no body to read a `tenantId` out of, so
+    // it could not consult them even if this were the place for them.
+    WEB_ORIGINS: originList,
 
     SWAGGER_ENABLED: booleanish(true),
   })
