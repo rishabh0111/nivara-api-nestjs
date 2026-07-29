@@ -95,10 +95,31 @@ export const decodeRefreshCookie = (
  *
  * `httpOnly` is what keeps a page script — an XSS payload, a third-party tag —
  * from lifting the credential; combined with hashed-at-rest storage it means
- * neither a database read nor injected script yields a usable token. `Path` is
- * narrowed to the routes that consume it, so ordinary API calls do not carry it
- * at all, and `sameSite: 'lax'` keeps a cross-site request from silently
- * minting a session.
+ * neither a database read nor an injected script yields a usable token. `Path`
+ * is narrowed to the routes that consume it, so ordinary API calls do not carry
+ * it at all.
+ *
+ * **`sameSite` follows `secure`, because the browser makes them one decision.**
+ * `SameSite=None` is rejected outright unless the cookie is also `Secure`, so
+ * the pair cannot be configured independently without producing a combination
+ * no browser will store.
+ *
+ * The deployed shape is the cross-site one. A front end on its own origin and
+ * an API on another are cross-site by the registrable domain, and `Lax` is not
+ * sent on cross-site XHR — which does not break sign-in, it breaks *refresh*:
+ * the session works for fifteen minutes and then ends with no way to renew it,
+ * which is the failure that looks like a bug in the front end. `None` is what
+ * a session split across two origins actually requires.
+ *
+ * Development keeps `Lax`, and not as a concession. Over plain http there is no
+ * `Secure` to pair with, so `None` would be discarded rather than honoured —
+ * and it is unnecessary anyway, because a front end and an API both on
+ * `localhost` are already same-site whatever their ports.
+ *
+ * What `Lax` used to buy — refusing to travel on a cross-site request — is now
+ * bought elsewhere, and had to be: credentialed CORS is granted only to the
+ * configured front-end origins, so a page nobody listed cannot read a response
+ * even when the browser sends the cookie (ADR-0003).
  */
 export const refreshCookieOptions = (
   surface: RefreshCookieSurface,
@@ -106,7 +127,7 @@ export const refreshCookieOptions = (
 ): CookieOptions => ({
   httpOnly: true,
   secure,
-  sameSite: 'lax',
+  sameSite: secure ? 'none' : 'lax',
   path: surface.path,
   maxAge: SLIDING_WINDOW_MS,
 });

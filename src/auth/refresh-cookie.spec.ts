@@ -62,10 +62,9 @@ describe('the refresh cookie flags', () => {
    * would ride along on every API call rather than only the routes that
    * consume it.
    */
-  it('is httpOnly, same-site, and scoped to the auth routes', () => {
+  it('is httpOnly and scoped to the auth routes', () => {
     expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, false)).toMatchObject({
       httpOnly: true,
-      sameSite: 'lax',
       path: '/auth',
     });
   });
@@ -74,6 +73,32 @@ describe('the refresh cookie flags', () => {
     expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, true).secure).toBe(true);
     expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, false).secure).toBe(
       false,
+    );
+  });
+
+  /**
+   * The deployed front end is on another registrable domain, which makes every
+   * call to this API cross-site. `Lax` is not sent on a cross-site XHR, and the
+   * half that breaks is refresh rather than sign-in — so the symptom is a
+   * session that works for fifteen minutes and then ends, with nothing in any
+   * log to say why.
+   */
+  it('travels cross-site once it is secure', () => {
+    expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, true).sameSite).toBe(
+      'none',
+    );
+  });
+
+  /**
+   * And not before. A browser discards `SameSite=None` on a cookie that is not
+   * `Secure`, so pairing them is not a preference — the alternative is a cookie
+   * that is never stored at all. Plain-http development needs nothing from
+   * `None` anyway: a front end and an API both on `localhost` are same-site
+   * whatever ports they hold.
+   */
+  it('stays lax where there is no secure flag to pair it with', () => {
+    expect(refreshCookieOptions(STAFF_REFRESH_COOKIE, false).sameSite).toBe(
+      'lax',
     );
   });
 
@@ -108,8 +133,19 @@ describe('the refresh cookie flags', () => {
   it('carries each surface’s own path into the options it builds', () => {
     expect(refreshCookieOptions(PORTAL_REFRESH_COOKIE, false)).toMatchObject({
       httpOnly: true,
-      sameSite: 'lax',
       path: '/portal/auth',
+    });
+  });
+
+  /**
+   * Both surfaces or neither. The portal is the one that would go unnoticed —
+   * it is signed into less often than the dashboard, so a cross-site session
+   * that cannot refresh would read as an occasional unexplained logout.
+   */
+  it('applies the cross-site flags to the portal as well as to staff', () => {
+    expect(refreshCookieOptions(PORTAL_REFRESH_COOKIE, true)).toMatchObject({
+      secure: true,
+      sameSite: 'none',
     });
   });
 });
