@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { mintServiceToken } from '../src/service-tokens/service-token-format';
-import { TENANT_IDS, TICKET_IDS } from './seed/anchors';
+import { SERVICE_TOKEN_IDS, TENANT_IDS, TICKET_IDS } from './seed/anchors';
 import { prisma, reset } from './seed/database';
 import { meridian } from './seed/meridian';
 import { TenantPlan } from './seed/plan';
@@ -30,17 +30,28 @@ const main = async (): Promise<void> => {
 
   await reset();
 
-  // Minted here rather than inside the tenant plan, because the raw value must
-  // exist in exactly two places — this variable and the console — and never in a
-  // file anyone could commit. Only the hash reaches the database, so a developer
-  // who loses the printout reseeds rather than recovering it: the same story the
-  // mint endpoint tells a real admin.
-  const token = mintServiceToken(TENANT_IDS.meridian);
+  // Minted here rather than inside the tenant plan, because the raw values must
+  // exist in exactly two places — these variables and the console — and never in
+  // a file anyone could commit. Only the hashes reach the database, so a
+  // developer who loses the printout reseeds rather than recovering them: the
+  // same story the mint endpoint tells a real admin.
+  //
+  // Two separate mints rather than one value used twice. They are two
+  // credentials with two sets of authority, and sharing a secret between them
+  // would collapse that distinction in the only place it is enforced.
+  const assistant = mintServiceToken(TENANT_IDS.meridian);
+  const reporter = mintServiceToken(TENANT_IDS.meridian);
 
-  await writeTenant(meridian, { now, serviceTokenHash: token.tokenHash });
+  await writeTenant(meridian, {
+    now,
+    tokenHashes: {
+      [SERVICE_TOKEN_IDS.assistant]: assistant.tokenHash,
+      [SERVICE_TOKEN_IDS.reporter]: reporter.tokenHash,
+    },
+  });
   await writeTenant(sortwood, { now });
 
-  announce(token.raw);
+  announce(assistant.raw, reporter.raw);
 };
 
 /**
@@ -65,7 +76,7 @@ const scale = (plan: TenantPlan): string =>
  * ids are the exception and are quoted anyway, so the output stands on its own
  * without anybody having to go and look them up.
  */
-const announce = (rawToken: string): void => {
+const announce = (rawAssistant: string, rawReporter: string): void => {
   console.log(`
 Seeded two tenants.
 
@@ -92,9 +103,13 @@ Reference Tickets, stable across reseeds:
   ${TICKET_IDS.reopened}  resolved, reopened, resolved again
   ${TICKET_IDS.closedWithSuccessor}  closed, with a linked successor
 
-Meridian service token — shown once, stored only as a hash:
+Meridian service tokens — shown once, stored only as a hash. Two of them,
+because what each may do is different and a shared secret would say otherwise:
 
-  ${rawToken}
+  ${rawAssistant}
+    Deflection assistant — answers Tickets and moves them through the queue
+  ${rawReporter}
+    Deflection reporter — reads this tenant's analytics and nothing else
 `);
 };
 

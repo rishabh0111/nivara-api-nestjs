@@ -52,11 +52,20 @@ export const CONTACT_IDS = {
 } as const;
 
 /**
- * Meridian's one service token row.
+ * Meridian's two service token rows, named for the job each one does.
  *
- * The id is fixed; the secret is not, and must not be — see `mintDemoToken`.
+ * Two rather than one because they are deliberately not the same credential.
+ * The assistant answers customers and writes to Tickets; the reporter only
+ * reads the score. Holding both sets of authority on one row would mean the
+ * credential on the request path could read its own numbers, which is the one
+ * arrangement a scoreboard must not be built on.
+ *
+ * The ids are fixed; the secrets are not, and must not be — see `seed.ts`.
  */
-export const SERVICE_TOKEN_ID = '5eed0003-0000-4000-8000-000000000001';
+export const SERVICE_TOKEN_IDS = {
+  assistant: '5eed0003-0000-4000-8000-000000000001',
+  reporter: '5eed0003-0000-4000-8000-000000000002',
+} as const;
 
 /**
  * The five reference Tickets, one per interesting shape.

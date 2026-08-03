@@ -28,9 +28,9 @@ npm run start:dev
 
 **Sortwood** is the isolation tenant: three staff, three Contacts, five Tickets. It is small on purpose. One tenant makes isolation unfalsifiable — every query returns the only rows that exist — and a second one small enough to read end to end lets a developer check the claim instead of trusting it.
 
-Every timestamp is relative to the moment the seed ran, so the SLA and analytics pictures stay realistic whenever it is run. The seed truncates before it writes, so re-running it is how you reset to a known state. A handful of ids are fixed across runs — both tenants, the staff, the service token, and five reference Tickets — so documentation can quote a record without going stale; they live in [prisma/seed/anchors.ts](prisma/seed/anchors.ts).
+Every timestamp is relative to the moment the seed ran, so the SLA and analytics pictures stay realistic whenever it is run. The seed truncates before it writes, so re-running it is how you reset to a known state. A handful of ids are fixed across runs — both tenants, the staff, the two service tokens, and five reference Tickets — so documentation can quote a record without going stale; they live in [prisma/seed/anchors.ts](prisma/seed/anchors.ts).
 
-One Meridian service token is minted on each run. The raw value is printed once and only its hash is stored, exactly as the mint endpoint behaves. Refresh tokens and widget sessions are deliberately not seeded: both are ephemeral session state, and seeding either would mint a credential nobody holds.
+Two Meridian service tokens are minted on each run — one that answers Tickets and one that only reads analytics — and they are two credentials rather than one wider grant so that the credential on the request path cannot read the numbers its own work is scored by. Each raw value is printed once and only its hash is stored, exactly as the mint endpoint behaves. Refresh tokens and widget sessions are deliberately not seeded: both are ephemeral session state, and seeding either would mint a credential nobody holds.
 
 ## Tenant isolation
 

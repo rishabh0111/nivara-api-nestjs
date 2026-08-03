@@ -191,22 +191,12 @@ export const sortwood: TenantPlan = {
   // tenant's widget is refused by the other, and the isolation tenant proves it
   // the same way it proves every other cross-tenant claim.
   //
-  // The two real origins beside it are where the widget is embedded from — a
-  // static page standing in for a tenant's own site, and the local server that
-  // serves it during development. They belong to this tenant rather than to
-  // Meridian deliberately: an embedded widget mints Contacts and opens Tickets
-  // on whatever tenant it is bootstrapped against, and the showcase tenant's
-  // data is curated to be read rather than added to.
-  //
-  // Note the ports. The widget's whole claim is that it works from somebody
-  // else's page, so the local host page is served on its own port — the front
-  // end's own origin would make the demonstration same-origin and prove
-  // nothing about the gate it is meant to be passing.
-  widgetOrigins: [
-    'https://sortwood.example',
-    'https://rishabh0111.github.io',
-    'http://localhost:4173',
-  ],
+  // One entry, and the demo's own origins are not among them: the embedded
+  // widget bootstraps Meridian, so they are listed there. What this tenant owes
+  // the demonstration is an origin Meridian does *not* allow, so that a refusal
+  // is attributable to the tenant rather than to an origin no tenant has heard
+  // of — which any unlisted string would have shown just as well.
+  widgetOrigins: ['https://sortwood.example'],
   // An admin and an agent, which is all a tenant this size needs — plus the
   // shared-address User, which is not staffing but evidence. Iris exists here
   // *and* at Meridian on the same address, and the pair is the only way to show

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   CONTACT_IDS,
-  SERVICE_TOKEN_ID,
+  SERVICE_TOKEN_IDS,
   SLACK_TEAM_ID,
   TENANT_IDS,
   TICKET_IDS,
@@ -85,7 +85,7 @@ describe('the seeded tenants', () => {
       ...Object.values(USER_IDS),
       ...Object.values(CONTACT_IDS),
       ...Object.values(TICKET_IDS),
-      SERVICE_TOKEN_ID,
+      ...Object.values(SERVICE_TOKEN_IDS),
     ];
 
     const found = await asOwner<{ id: string }>(
@@ -312,15 +312,28 @@ describe('the seeded credentials', () => {
     );
   });
 
-  it('keeps only the hash of the one minted service token', async () => {
+  /**
+   * Shape rather than contents, on purpose. What the assistant is granted is a
+   * decision that will be revisited, and a test spelling the list out twice
+   * would fail on every revision without having noticed anything. What must not
+   * change is that the raw values are gone, that each token has *some*
+   * authority, and that the two were minted separately — two credentials
+   * sharing a secret would be one credential wearing two names.
+   */
+  it('keeps only the hashes of the minted service tokens', async () => {
     const rows = await asOwner<{ token_hash: string; scopes: string[] }>(
-      `SELECT token_hash, scopes FROM service_token WHERE id = $1`,
-      [SERVICE_TOKEN_ID],
+      `SELECT token_hash, scopes FROM service_token WHERE id = ANY($1)`,
+      [Object.values(SERVICE_TOKEN_IDS)],
     );
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0].token_hash).toMatch(/^[0-9a-f]{64}$/);
-    expect(rows[0].scopes.length).toBeGreaterThan(0);
+    expect(rows).toHaveLength(Object.keys(SERVICE_TOKEN_IDS).length);
+
+    for (const row of rows) {
+      expect(row.token_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(row.scopes.length).toBeGreaterThan(0);
+    }
+
+    expect(new Set(rows.map((row) => row.token_hash)).size).toBe(rows.length);
   });
 
   /**

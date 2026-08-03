@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { SUPPORT_WORK } from '../../src/authz/permissions';
 import {
   CONTACT_IDS,
-  SERVICE_TOKEN_ID,
+  SERVICE_TOKEN_IDS,
   SHARED_EMAIL,
   SHARED_GOOGLE_SUBJECT,
   SLACK_TEAM_ID,
@@ -722,19 +721,56 @@ export const meridian: TenantPlan = {
   slug: 'meridian',
   name: 'Meridian',
   // The widget is on for this tenant, so the demo path can exercise it without
-  // configuring anything. Two entries because the widget will be embedded on the
-  // marketing site and driven from the local dev server, and matching is exact —
-  // no wildcards, no subdomain suffixes.
-  widgetOrigins: ['https://meridian.example', 'http://localhost:3000'],
+  // configuring anything. Matching is exact — no wildcards, no subdomain
+  // suffixes — so every page the widget is embedded on is listed.
+  //
+  // The first two are the marketing site and the local dev server. The last two
+  // are the published widget demo: a static page standing in for a tenant's own
+  // site, and the local server that serves that same page during development.
+  // Note its port — the widget's whole claim is that it works from somebody
+  // else's page, so the local host page is served on its own port rather than
+  // the front end's, which would make the demonstration same-origin and prove
+  // nothing about the gate it is meant to be passing.
+  //
+  // The demo's two origins sit here rather than on Sortwood because this is the
+  // tenant the demo is for. An embedded widget mints Contacts and opens Tickets
+  // on whatever tenant it is bootstrapped against, so pointing it here means the
+  // showcase gains real widget traffic beside its composed backlog — which is
+  // the point, since the AI layer answers on this tenant and its
+  // deflection is read from this tenant's analytics.
+  widgetOrigins: [
+    'https://meridian.example',
+    'http://localhost:3000',
+    'https://rishabh0111.github.io',
+    'http://localhost:4173',
+  ],
   users: USERS,
   contacts: CONTACTS,
   tickets: [...referenceTickets(), ...routineTickets()],
   slack: { teamId: SLACK_TEAM_ID, botUserId: 'U5EED0BOT' },
-  serviceToken: {
-    id: SERVICE_TOKEN_ID,
+  assistantToken: {
+    id: SERVICE_TOKEN_IDS.assistant,
     name: 'Deflection assistant',
-    // Exactly the support work — the same bound the mint endpoint enforces. A
-    // token that could do more than an agent would be a demo of the wrong thing.
-    scopes: SUPPORT_WORK,
+    // Four of the eleven, and the gap is the statement. `ASSIGNABLE_SCOPES` is
+    // the support work, and it is the bound on what a machine credential *may*
+    // hold — not a shopping list of what one should take. This credential reads
+    // a Ticket, replies to it, moves it, and writes an internal Note; that is
+    // the whole job, so that is the whole grant.
+    //
+    // The omissions are each somebody's decision rather than an oversight, and
+    // `note:read` is the one worth naming: a layer that can write an internal
+    // Note but never read one cannot be talked into surfacing a colleague's
+    // private note into an answer a customer sees.
+    scopes: ['ticket:read', 'ticket:reply', 'ticket:transition', 'note:write'],
+  },
+  reporterToken: {
+    id: SERVICE_TOKEN_IDS.reporter,
+    name: 'Deflection reporter',
+    // `analytics:read` alone, held by the scheduled job that publishes the
+    // score and by nothing on the request path. Adding it to the assistant
+    // above would have saved a row and cost the arrangement its meaning: the
+    // credential that answers customers would then be able to read the numbers
+    // those answers are graded on.
+    scopes: ['analytics:read'],
   },
 };

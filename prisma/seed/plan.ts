@@ -1,3 +1,4 @@
+import { Permission } from '../../src/authz/permissions';
 import {
   TicketPriority,
   TicketSource,
@@ -122,6 +123,21 @@ export interface ContactPlan {
   verified: boolean;
 }
 
+/**
+ * One machine credential, and what it was granted at mint.
+ *
+ * The scopes are `Permission`s rather than strings, which is the one place this
+ * file reaches into the application's vocabulary on purpose: a seed granting a
+ * scope that does not exist would write a row whose authority silently narrows
+ * to nothing when `grantedScopes()` reads it back, and a typo should fail at the
+ * compiler instead.
+ */
+export interface ServiceTokenPlan {
+  id: string;
+  name: string;
+  scopes: readonly Permission[];
+}
+
 export interface TenantPlan {
   id: string;
   slug: string;
@@ -142,6 +158,23 @@ export interface TenantPlan {
    */
   slack?: { teamId: string; botUserId: string };
 
-  /** The one machine credential, minted by this tenant's admin. */
-  serviceToken?: { id: string; name: string; scopes: readonly string[] };
+  /**
+   * The machine credential the AI layer acts with, and the one every `ai` entry
+   * in this tenant's threads is attributed to.
+   *
+   * A tenant has at most one, because "which credential wrote this reply" has
+   * to have a single answer for the deflection story to hold together.
+   */
+  assistantToken?: ServiceTokenPlan;
+
+  /**
+   * A second machine credential that only reads, held by whatever job reports
+   * on the tenant rather than by anything on the request path.
+   *
+   * Two named fields rather than a list, because the two are not
+   * interchangeable: `write.ts` has to know which one seeded `ai` replies were
+   * written under, and a list would make that a search. Why they are two
+   * credentials at all is in `anchors.ts`.
+   */
+  reporterToken?: ServiceTokenPlan;
 }

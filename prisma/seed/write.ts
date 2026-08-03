@@ -45,13 +45,21 @@ const hash = (): Promise<string> =>
 export interface WriteOptions {
   /** The instant every offset in the plan is measured back from. */
   now: Date;
-  /** The stored form of the one minted token. The raw value never comes here. */
-  serviceTokenHash?: string;
+
+  /**
+   * The stored form of each minted token, keyed by the id the plan gives it.
+   * Raw values never come here.
+   *
+   * Keyed rather than positional so that the plan stays the thing that says
+   * which credentials a tenant has: adding one is an entry in the plan and a
+   * hash beside it, not a third argument every caller has to reorder.
+   */
+  tokenHashes?: Readonly<Record<string, string>>;
 }
 
 export const writeTenant = async (
   plan: TenantPlan,
-  { now, serviceTokenHash }: WriteOptions,
+  { now, tokenHashes }: WriteOptions,
 ): Promise<void> => {
   await prisma.tenant.create({
     data: {
@@ -102,19 +110,30 @@ export const writeTenant = async (
     });
   }
 
-  // Both or neither. A plan naming a token without a hash to store would be a
-  // row nobody can present a credential for, and a hash with no plan would be a
-  // secret printed for a token that does not exist.
-  const token = plan.serviceToken;
+  // Both or neither, per token, and loudly. A plan naming a token with no hash
+  // to store would be a row nobody can present a credential for — and worse,
+  // the caller has already minted the secret and is about to print it, so the
+  // developer would be handed a credential that authenticates nothing. Keying
+  // the hashes by id is what makes that reachable by a typo, so it throws here
+  // rather than skipping quietly.
+  for (const token of [plan.assistantToken, plan.reporterToken]) {
+    if (!token) continue;
 
-  if (token && serviceTokenHash) {
+    const tokenHash = tokenHashes?.[token.id];
+
+    if (!tokenHash) {
+      throw new Error(
+        `tenant ${plan.slug} plans a service token (${token.name}, ${token.id}) with no hash to store`,
+      );
+    }
+
     await armed(plan.id, { kind: 'user', id: admin.id }, async (tx) => {
       await tx.serviceToken.create({
         data: {
           id: token.id,
           tenantId: plan.id,
           name: token.name,
-          tokenHash: serviceTokenHash,
+          tokenHash,
           scopes: [...token.scopes],
           createdById: admin.id,
         },
@@ -155,7 +174,7 @@ export const writeTenant = async (
     await writeTicket(plan, ticket, targets[ticket.priority], {
       now,
       adminId: admin.id,
-      serviceTokenId: plan.serviceToken?.id,
+      serviceTokenId: plan.assistantToken?.id,
     });
   }
 };

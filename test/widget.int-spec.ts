@@ -27,11 +27,11 @@ import { seededTenantIds } from './helpers/seeded-tenants';
  * is one refactor away from leaking, and only the direct query tells the two
  * apart.
  *
- * The seeded origins are the fixture. Meridian allows
- * `https://meridian.example` and `http://localhost:3000`; Sortwood allows
- * `https://sortwood.example` plus the two origins the widget demo is embedded
- * from. What this suite needs is only that the two lists stay disjoint, which
- * is what makes a refusal attributable to the tenant rather than the origin.
+ * The seeded origins are the fixture. Meridian allows `https://meridian.example`
+ * and `http://localhost:3000`, plus the two origins the widget demo is embedded
+ * from; Sortwood allows `https://sortwood.example`. What this suite needs is
+ * only that the two lists stay disjoint, which is what makes a refusal
+ * attributable to the tenant rather than the origin.
  *
  * Requires `docker compose up -d postgres && npm run db:migrate && npm run
  * db:seed`; see `npm run test:int`.
