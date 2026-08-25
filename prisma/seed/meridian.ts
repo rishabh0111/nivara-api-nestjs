@@ -125,7 +125,7 @@ const CONTACTS: ContactPlan[] = [
 const cycle = <T>(items: readonly T[], index: number): T =>
   items[index % items.length];
 
-/** One support conversation, reused across Tickets with different outcomes. */
+/** One support conversation, played out as a Ticket with a different outcome. */
 interface Topic {
   subject: string;
   asked: string;
@@ -135,6 +135,19 @@ interface Topic {
   note: string;
 }
 
+/**
+ * Forty-four of these, one per routine Ticket below — not a smaller set cycled
+ * with repeats.
+ *
+ * `cycle` still does the assigning, but `TOPICS.length` matches `ROUTINE`'s
+ * total exactly, so `index % TOPICS.length` never wraps: every routine Ticket
+ * gets a genuinely different customer's words rather than one of a handful of
+ * voices said forty-four times over. That property is a count relationship
+ * between two arrays that live apart in this file, so it is worth stating
+ * here rather than only being true by coincidence — a `SHAPES` change that
+ * moves `ROUTINE`'s total without a matching change here would silently bring
+ * repeats back.
+ */
 const TOPICS: readonly Topic[] = [
   {
     subject: 'Invoice shows the wrong billing address',
@@ -263,6 +276,358 @@ const TOPICS: readonly Topic[] = [
       AI_SIGNATURE,
     note: 'Recurring quarterly request from this account. Worth showing them the API once.',
   },
+  {
+    subject: 'Custom domain for the support portal is not resolving',
+    asked:
+      'We set up a custom domain for our support portal three days ago and it still shows a certificate error.',
+    answered:
+      'The CNAME was pointed correctly but the verification TXT record was missing, so the certificate never issued. Added it and the certificate is live.',
+    deflected:
+      'A missing verification TXT record is the usual cause of a custom domain that never certifies — check the DNS setup guide for the exact record. — ' +
+      AI_SIGNATURE,
+    note: 'Second account this month with the same missing-TXT mistake. Worth a callout in the setup docs.',
+  },
+  {
+    subject: 'Password reset email never arrives',
+    asked:
+      'I have requested a password reset three times now and nothing shows up, not even in spam.',
+    answered:
+      'Your workspace has a corporate mail filter quarantining anything from our sending domain. I have added it to your allowlist and resent the reset.',
+    deflected:
+      'If a reset email never arrives after several tries, check with your IT team about a mail filter on our sending domain before assuming it failed to send. — ' +
+      AI_SIGNATURE,
+    note: 'Confirmed via mail headers the sends succeeded; this was entirely on the receiving side.',
+  },
+  {
+    subject: 'Two contact records for the same customer',
+    asked:
+      'We have two records for the same customer with different histories and want them merged into one.',
+    answered:
+      'Merged the two contact records — the ticket history from both is now under the older one, and the newer id now redirects.',
+    deflected:
+      'Duplicate contact records can be merged from the contact detail page; the combined history keeps everything from both. — ' +
+      AI_SIGNATURE,
+    note: 'Likely caused by a widget session that never picked up the verified email. Flagged for the widget team.',
+  },
+  {
+    subject: 'Slack integration silently stopped posting',
+    asked:
+      'New tickets used to show up in our Slack channel automatically and now nothing posts, with no error anywhere.',
+    answered:
+      'The Slack app token had been revoked from your workspace’s side during an app review. Reconnected the integration and it is posting again.',
+    deflected:
+      'A Slack integration that goes quiet with no error is usually a revoked app token on the Slack side — reconnecting it from the integrations page fixes it. — ' +
+      AI_SIGNATURE,
+    note: 'Slack revokes tokens silently on some workspace app reviews. Worth a status check we could surface proactively.',
+  },
+  {
+    subject: 'Custom field values missing from the export',
+    asked:
+      'Our export has all the standard columns but none of the custom fields we added show up.',
+    answered:
+      'Custom fields need to be added to the export template explicitly — I have updated your saved export to include them.',
+    deflected:
+      'Custom fields are not included in an export by default; add them to the export template under Settings → Exports before running it. — ' +
+      AI_SIGNATURE,
+    note: 'This surprises most people who add custom fields after building their export template.',
+  },
+  {
+    subject: 'Auto-assignment rule is not triggering',
+    asked:
+      'I set up a rule to auto-assign tickets tagged “billing” to one agent, but they are landing unassigned.',
+    answered:
+      'The rule was scoped to the “Billing” tag with a capital B, while your tickets are tagged lowercase — tags are case-sensitive. Corrected the rule.',
+    deflected:
+      'Assignment rules match tags exactly, including case — check that the tag in the rule matches the tag on the tickets letter for letter. — ' +
+      AI_SIGNATURE,
+    note: 'Tag case sensitivity trips people up regularly. Considered a normalisation pass, deferred for now.',
+  },
+  {
+    subject: 'SLA clock seems to run through the weekend',
+    asked:
+      'A ticket opened Friday evening shows as breached by Saturday morning, which cannot be within our stated hours.',
+    answered:
+      'Your SLA policy was still on the default 24/7 calendar rather than your configured business hours. Switched it to the business-hours calendar.',
+    deflected:
+      'If breaches are showing up outside business hours, check that the SLA policy is attached to a business-hours calendar rather than the default 24/7 one. — ' +
+      AI_SIGNATURE,
+    note: 'Default calendar on new SLA policies should probably follow the workspace calendar automatically. Filed as a product suggestion.',
+  },
+  {
+    subject: 'Canned response variables show as literal text',
+    asked:
+      'When I use a canned response the {{contact_name}} placeholder is not being replaced — it just sends literally.',
+    answered:
+      'That canned response was created before variable support shipped and used a different bracket style. Recreated it with the current syntax.',
+    deflected:
+      'A canned response written before variable support shipped may use an old placeholder style — recreating it with the current double-brace syntax fixes it. — ' +
+      AI_SIGNATURE,
+    note: 'Old-format canned responses should probably be flagged automatically. Filed as a product suggestion.',
+  },
+  {
+    subject: 'Bulk close only closed part of the selection',
+    asked:
+      'I selected forty tickets and chose bulk close, but only about half of them actually closed.',
+    answered:
+      'The tickets that did not close were still `open` rather than `resolved` — bulk close only applies to already-resolved tickets. Resolved and closed the rest for you.',
+    deflected:
+      'Bulk close only applies to tickets already in a resolved state; an open ticket in the same selection is silently skipped rather than closed. — ' +
+      AI_SIGNATURE,
+    note: 'The silent skip is the actual problem here, not the underlying rule. Filed for a visible skipped-count in the bulk action result.',
+  },
+  {
+    subject: 'IP allowlist locked out the remote team',
+    asked:
+      'We turned on an IP allowlist for admin logins and now half our team working from home cannot sign in.',
+    answered:
+      'Added your team’s VPN exit range to the allowlist so remote logins pass again — the office range alone was too narrow for a hybrid team.',
+    deflected:
+      'An IP allowlist needs every network your team actually signs in from, including VPN exit ranges for remote staff, not just the office range. — ' +
+      AI_SIGNATURE,
+    note: 'Recommend testing an allowlist change from a second device before rolling it out to the whole team.',
+  },
+  {
+    subject: 'Sessions time out much faster than expected',
+    asked:
+      'I am being signed out every twenty minutes or so even though I am actively using the dashboard.',
+    answered:
+      'A browser extension on your machine was clearing the session cookie on tab focus changes. Disabling it fixed the timeouts.',
+    deflected:
+      'Unexpectedly frequent sign-outs are usually a browser extension clearing cookies rather than the session timeout itself — try an incognito window to check. — ' +
+      AI_SIGNATURE,
+    note: 'Third report this quarter traced to an aggressive cookie-clearing extension. Considering a docs page for this.',
+  },
+  {
+    subject: 'An action is missing from the audit log',
+    asked:
+      'A teammate says they changed a ticket’s priority yesterday but I cannot find that change in the audit log.',
+    answered:
+      'The change was logged under the ticket’s own history rather than the workspace audit log, since priority changes are ticket-scoped. Found it there.',
+    deflected:
+      'Some changes, like a ticket’s priority, are logged on the ticket’s own history rather than the workspace-wide audit log — check both. — ' +
+      AI_SIGNATURE,
+    note: 'Worth reconsidering whether ticket-scoped changes should also surface in the workspace audit log.',
+  },
+  {
+    subject: 'A junior agent has more access than intended',
+    asked:
+      'One of our newer agents can see billing information that should be admin-only, and we are not sure why.',
+    answered:
+      'They were added under the general Agent role, which includes billing read access by default. Moved them to a scoped custom role without it.',
+    deflected:
+      'The default Agent role includes billing read access; if that should not be visible to a specific person, create a custom role without that permission. — ' +
+      AI_SIGNATURE,
+    note: 'Several accounts assume Agent is the minimal role. Might be worth a narrower default.',
+  },
+  {
+    subject: 'Requesting deletion of a contact’s data',
+    asked:
+      'A former customer has asked us to delete all of their personal data from our workspace under GDPR.',
+    answered:
+      'Deleted the contact record and anonymised their name and email across their ticket history, leaving the ticket content itself for our records.',
+    deflected:
+      'A contact deletion request removes their personal details and anonymises past tickets, while ticket content itself is retained for support records — see the data-handling policy for the exact scope. — ' +
+      AI_SIGNATURE,
+    note: 'Confirmed against the data-handling policy before acting; logged the request and completion date for the compliance record.',
+  },
+  {
+    subject: 'Calendar integration is creating duplicate events',
+    asked:
+      'Every scheduled call from a ticket is showing up twice on my calendar after connecting the calendar integration.',
+    answered:
+      'You had the integration connected on two separate ticket views, so each scheduling action synced twice. Disconnected the duplicate connection.',
+    deflected:
+      'Duplicate calendar events usually mean the integration is connected in more than one place — check your integrations list for a second, redundant connection. — ' +
+      AI_SIGNATURE,
+    note: 'The integrations page should probably warn before allowing a second connection to the same calendar.',
+  },
+  {
+    subject: 'Mobile app is not showing push notifications',
+    asked:
+      'I used to get a push notification for every new assigned ticket on my phone and they stopped a few days ago.',
+    answered:
+      'Your phone’s OS had revoked notification permission for the app after an update. Re-enabling it in your phone settings restored delivery immediately.',
+    deflected:
+      'A phone OS update can quietly revoke notification permission for an app — check that permission is still enabled in your phone’s own settings. — ' +
+      AI_SIGNATURE,
+    note: 'This is an OS-level behaviour on both major platforms after certain updates, not something on our side to fix.',
+  },
+  {
+    subject: 'Filtering by tag returns tickets without that tag',
+    asked:
+      'Filtering the queue by the tag “urgent-billing” is showing me tickets that clearly are not tagged that way.',
+    answered:
+      'You had two similarly named tags — “urgent-billing” and “urgent_billing” — and the filter was matching both due to a display quirk. Merged the duplicate tag.',
+    deflected:
+      'Two similarly spelled tags can look identical in the filter dropdown — check Settings → Tags for a near-duplicate before assuming the filter itself is wrong. — ' +
+      AI_SIGNATURE,
+    note: 'Filed a suggestion to warn when creating a tag that closely matches an existing one.',
+  },
+  {
+    subject: 'White-label branding is not applying to the portal',
+    asked:
+      'We uploaded our logo and colours for white-label branding but the support portal our customers see still shows Meridian’s default look.',
+    answered:
+      'Branding was saved under a draft that was never published. Published it, and the portal now reflects your logo and colours.',
+    deflected:
+      'Branding changes are saved as a draft until explicitly published — check for an unpublished draft under Settings → Branding if changes are not showing. — ' +
+      AI_SIGNATURE,
+    note: 'The draft/publish distinction is not obvious from the branding page itself. Filed as a UX suggestion.',
+  },
+  {
+    subject: 'Exported CSV shows garbled accented characters',
+    asked:
+      'Customer names with accented characters show up as garbled symbols when we open the exported CSV in our spreadsheet tool.',
+    answered:
+      'The export is UTF-8 and your spreadsheet tool was opening it with a different default encoding. Re-importing with UTF-8 selected explicitly fixed the display.',
+    deflected:
+      'Garbled accented characters in an exported CSV usually mean the spreadsheet tool opened it with the wrong encoding — re-import and select UTF-8 explicitly. — ' +
+      AI_SIGNATURE,
+    note: 'Some spreadsheet tools default to a legacy encoding on CSV import; worth a short note in the export docs.',
+  },
+  {
+    subject: 'API pagination cursor expires before we finish paging',
+    asked:
+      'A long-running export job of ours gets a cursor-expired error partway through paging results.',
+    answered:
+      'Your job was pausing for several minutes between pages under heavy load, past the cursor’s validity window. Adjusted your job to keep requests closer together, which resolved it.',
+    deflected:
+      'A pagination cursor is only valid for a limited window — a job that pauses too long between pages under load can outlive it and needs a fresh query instead. — ' +
+      AI_SIGNATURE,
+    note: 'Cursor lifetime is not currently documented anywhere customer-facing. Flagged for the API reference.',
+  },
+  {
+    subject: 'An escalation rule never fires',
+    asked:
+      'We set up a rule to escalate any urgent ticket unanswered after fifteen minutes, but nothing has ever escalated even when it should have.',
+    answered:
+      'The rule’s condition compared against the wrong timestamp field, so it was evaluating against ticket creation rather than assignment. Corrected the field and it is firing correctly.',
+    deflected:
+      'An escalation rule that never fires is often comparing against the wrong timestamp field — check that it is evaluating time since assignment rather than time since creation. — ' +
+      AI_SIGNATURE,
+    note: 'Considering a dry-run mode for escalation rules so a misconfigured condition is visible before it goes live.',
+  },
+  {
+    subject: 'Support portal shows the wrong language for some visitors',
+    asked:
+      'Some of our customers in France are seeing the support portal in English even though we have French translations enabled.',
+    answered:
+      'Locale detection was reading the browser’s primary language, and some of your affected customers have English set as primary with French second. Added a manual language switcher to the portal.',
+    deflected:
+      'Automatic locale detection reads a visitor’s primary browser language, which is not always their preferred one — a manual language switcher on the portal covers that gap. — ' +
+      AI_SIGNATURE,
+    note: 'Manual switcher shipped as a portal setting; recommend enabling it for any workspace supporting more than one locale.',
+  },
+  {
+    subject: 'Need to restore workspace settings after a bad change',
+    asked:
+      'Someone on our team changed several workspace settings by mistake this morning and we want to revert to how things were configured yesterday.',
+    answered:
+      'Workspace settings do not currently support a bulk restore, but I was able to walk back each changed setting individually using the audit log as a reference.',
+    deflected:
+      'There is no one-step settings restore; the audit log records each setting change individually and is the fastest way to walk changes back by hand. — ' +
+      AI_SIGNATURE,
+    note: 'A one-step settings restore keeps coming up. Worth raising with product as a recurring request.',
+  },
+  {
+    subject: 'An installed integration will not finish setup',
+    asked:
+      'We are trying to install the calendar app from the integrations marketplace and it gets stuck on the authorization step every time.',
+    answered:
+      'Your browser’s third-party cookie blocking was breaking the authorization popup. Installing with third-party cookies temporarily allowed for our domain let it complete.',
+    deflected:
+      'An integration install stuck on the authorization step is usually third-party cookie blocking in the browser — temporarily allowing it for our domain during install resolves it. — ' +
+      AI_SIGNATURE,
+    note: 'This will get more common as browsers tighten third-party cookie defaults. Worth an OAuth flow that does not depend on them.',
+  },
+  {
+    subject: 'One customer email created two separate tickets',
+    asked:
+      'A customer says they only sent one email but we ended up with two tickets from it, and they are confused getting two replies.',
+    answered:
+      'Their email client had sent it with two recipients on our support address in different capitalisations, which our inbound matching treated as distinct. Merged the two tickets and normalised the matching rule.',
+    deflected:
+      'A single email landing as two tickets is usually an inbound-matching quirk — check for the same address in different capitalisation or with a plus-alias before assuming it duplicated on send. — ' +
+      AI_SIGNATURE,
+    note: 'Inbound matching should probably normalise case before deduplicating. Filed as a fix.',
+  },
+  {
+    subject: 'File attachment upload fails with no error shown',
+    asked:
+      'When I try to attach a file to a reply, the upload bar just sits there and nothing happens, no error at all.',
+    answered:
+      'The file was just over the size limit, and the uploader was failing to surface that as a visible error. Compressing it let the upload succeed.',
+    deflected:
+      'An attachment upload that silently hangs is almost always over the size limit — compressing the file or splitting it usually resolves it. — ' +
+      AI_SIGNATURE,
+    note: 'The silent failure on an oversized file is the real bug here. Filed to surface a visible error instead.',
+  },
+  {
+    subject: 'Scheduled report lands an hour off from expected',
+    asked:
+      'Our weekly report is set to send at 9am but keeps arriving at 8am, and we cannot figure out why.',
+    answered:
+      'The report schedule was set in UTC rather than your workspace timezone, and daylight saving had shifted the apparent local send time. Reconfigured it to follow the workspace timezone.',
+    deflected:
+      'A scheduled report that drifts by an hour around a daylight-saving change is usually scheduled in UTC rather than the workspace timezone — reconfigure it to follow the workspace setting. — ' +
+      AI_SIGNATURE,
+    note: 'Report scheduling should probably default to the workspace timezone rather than UTC. Filed as a product suggestion.',
+  },
+  {
+    subject: 'SSO group mapping is not assigning the right role',
+    asked:
+      'New staff coming in through SSO are all landing with the default role instead of the role their identity-provider group should map to.',
+    answered:
+      'The group-to-role mapping referenced the group’s display name, which your identity provider had since renamed; mappings match on the group id. Updated the mapping to the current id.',
+    deflected:
+      'Group-to-role mapping matches on the identity provider’s group id, not its display name — if a group was renamed on the provider side, the mapping needs updating to the current id. — ' +
+      AI_SIGNATURE,
+    note: 'Matching on display name instead of id is a common expectation. Worth a clearer warning in the mapping UI.',
+  },
+  {
+    subject: 'Rate limit is shared unexpectedly between two keys',
+    asked:
+      'We mint two separate API keys for two services and both are hitting rate limits as if they share one ceiling.',
+    answered:
+      'Both keys had been minted under the same integration record, and the rate limit is scoped to the integration rather than the individual key. Split them into two separate integrations.',
+    deflected:
+      'A rate limit ceiling is scoped to the integration a key belongs to, not the key itself — two keys under one integration record share the limit even though they look separate. — ' +
+      AI_SIGNATURE,
+    note: 'This is the second report of the integration-vs-key scoping being unintuitive. Worth documenting explicitly.',
+  },
+  {
+    subject: 'Tickets imported from Slack are missing some replies',
+    asked:
+      'A thread we imported from an old Slack channel is missing a couple of replies that I know were posted.',
+    answered:
+      'Those replies were posted as Slack thread reactions rather than text messages, which the importer does not carry across. Added the missing content manually from the export you shared.',
+    deflected:
+      'A Slack import carries text replies but not reactions or thread-only emoji responses — anything conveyed only as a reaction will not appear in the imported thread. — ' +
+      AI_SIGNATURE,
+    note: 'Reaction-only replies are a known importer gap. Documented rather than silently accepted as complete.',
+  },
+  {
+    subject: 'Merging two tickets scrambled the message order',
+    asked:
+      'I merged two related tickets and now the combined thread shows replies out of chronological order.',
+    answered:
+      'The merge interleaves by each ticket’s own internal sequence rather than timestamp when two messages share the same recorded second. Reordered the thread by timestamp manually.',
+    deflected:
+      'A ticket merge normally orders the combined thread by timestamp; two messages recorded in the same second can occasionally interleave out of order and may need a manual check. — ' +
+      AI_SIGNATURE,
+    note: 'Rare enough to not have been caught before — sub-second ordering during merge is the actual fix needed.',
+  },
+  {
+    subject: 'Usage dashboard undercounts calls from a partner integration',
+    asked:
+      'Our own logs show far more API calls going out than the usage dashboard reports for this month.',
+    answered:
+      'Calls made through your partner integration’s shared service account were being attributed to the partner’s workspace rather than yours. Corrected the attribution and backfilled the dashboard.',
+    deflected:
+      'A usage dashboard that undercounts against your own logs is often a partner integration calling through a shared service account attributed elsewhere — worth checking with the partner how their account is set up. — ' +
+      AI_SIGNATURE,
+    note: 'Attribution should follow the originating workspace regardless of which service account makes the call. Filed as a billing-accuracy fix.',
+  },
 ];
 
 /**
@@ -272,6 +637,10 @@ const TOPICS: readonly Topic[] = [
  * distribution: a queue that is mostly settled work with live work on top, which
  * is what a real support inbox looks like and what makes the analytics figures
  * mean anything.
+ *
+ * The values below must sum to `TOPICS.length` (see that array's comment) —
+ * changing the total here without adding or removing a matching number of
+ * Topics brings back repeated phrasing in the routine backlog.
  */
 const SHAPES = {
   /** Live work somebody owns. */
