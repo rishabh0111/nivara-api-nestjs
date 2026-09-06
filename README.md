@@ -1,5 +1,17 @@
 # nivara-api
 
+![NestJS](https://img.shields.io/badge/NestJS-E0234E?style=flat&logo=nestjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat&logo=postgresql&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-2D3748?style=flat&logo=prisma&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-FF4438?style=flat&logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-6BA539?style=flat&logo=openapiinitiative&logoColor=white)
+
+[Live](https://nivara-api-nestjs.onrender.com/health)  ·
+[OpenAPI docs](https://nivara-api-nestjs.onrender.com/docs)  ·
+[The product](https://nivara-landing-iota.vercel.app)
+
 The API behind [Nivara Desk](https://nivara-landing-iota.vercel.app): a multitenant, two-sided
 customer-support helpdesk. NestJS, Postgres, Prisma, Redis.
 
