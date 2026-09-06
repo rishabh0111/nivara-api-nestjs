@@ -305,4 +305,55 @@ describe('the deployment contract', () => {
       expect(compose).not.toContain('localhost:3000/health/ready');
     });
   });
+
+  describe('the deployed widget origins', () => {
+    // A widget session is refused unless the requesting Origin is on the
+    // tenant's allowlist, and that allowlist is seed data. So an origin the
+    // deployment actually serves from, missing here, is not a failing test
+    // anywhere — it is a reseed that silently starts returning 403 to every
+    // visitor, on a surface no test suite reaches. That is the failure mode
+    // this file exists for.
+    //
+    // These are the origins the live deployment is serving from today. Adding
+    // one to the running database and not to the seed is how they drifted
+    // apart the first time.
+    const meridian = seedPlanOrigins('meridian.ts');
+    const sortwood = seedPlanOrigins('sortwood.ts');
+
+    it('lets the deployed front end open a session on the showcase tenant', () => {
+      expect(meridian).toContain('https://nivara-web-nextjs.vercel.app');
+    });
+
+    it('lets both demo pages open a session on the tenant each bootstraps', () => {
+      // The two pages are served from the same origins and choose different
+      // tenants, so the origin has to be allowed on both. The one that answers
+      // bootstraps Meridian; the isolation one bootstraps Sortwood.
+      for (const origins of [meridian, sortwood]) {
+        expect(origins).toContain('https://rishabh0111.github.io');
+        expect(origins).toContain('http://localhost:4173');
+      }
+    });
+
+    it('keeps an origin each tenant refuses, so isolation stays demonstrable', () => {
+      // Shared origins are not the whole allowlist. Each tenant still holds one
+      // the other does not, which is what makes a refusal attributable to the
+      // tenant rather than to an origin nobody has heard of.
+      expect(meridian).not.toContain('https://sortwood.example');
+      expect(sortwood).not.toContain('http://localhost:3000');
+      expect(sortwood).not.toContain('https://nivara-web-nextjs.vercel.app');
+    });
+  });
 });
+
+/**
+ * The `widgetOrigins` array out of a seed plan, read as text rather than
+ * imported. The seed modules pull in Prisma and the whole tenant fixture; this
+ * assertion needs six strings, and reading them keeps the check to the file a
+ * person actually edits.
+ */
+function seedPlanOrigins(file: string): string[] {
+  const source = readFileSync(join(__dirname, '..', 'prisma', 'seed', file), 'utf8');
+  const block = /widgetOrigins:\s*(\[[^\]]*\])/.exec(source);
+  if (!block) throw new Error(`no widgetOrigins in prisma/seed/${file}`);
+  return [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+}

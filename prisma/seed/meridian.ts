@@ -1101,17 +1101,25 @@ export const meridian: TenantPlan = {
   // the front end's, which would make the demonstration same-origin and prove
   // nothing about the gate it is meant to be passing.
   //
-  // The demo's two origins sit here rather than on Sortwood because this is the
-  // tenant the demo is for. An embedded widget mints Contacts and opens Tickets
-  // on whatever tenant it is bootstrapped against, so pointing it here means the
-  // showcase gains real widget traffic beside its composed backlog — which is
-  // the point, since the AI layer answers on this tenant and its
-  // deflection is read from this tenant's analytics.
+  // Both demo origins are listed here *and* on Sortwood, because two demo pages
+  // are served from each of them and they bootstrap different tenants. The one
+  // that answers points here — an embedded widget mints Contacts and opens
+  // Tickets on whatever tenant it is bootstrapped against, so the showcase
+  // gains real widget traffic beside its composed backlog, which is the point:
+  // the AI layer answers on this tenant and deflection is read from this
+  // tenant's analytics. The isolation page points at Sortwood. An origin is not
+  // a tenant, and the allowlist was never a partition of one.
+  //
+  // These five are the live rows. The Vercel entry is the deployed front end's
+  // own origin, which `/widget` is served from; it was added to the running
+  // database by hand and is written down here so that a reseed restores the
+  // deployment rather than quietly 403-ing it.
   widgetOrigins: [
     'https://meridian.example',
     'http://localhost:3000',
     'https://rishabh0111.github.io',
     'http://localhost:4173',
+    'https://nivara-web-nextjs.vercel.app',
   ],
   users: USERS,
   contacts: CONTACTS,
