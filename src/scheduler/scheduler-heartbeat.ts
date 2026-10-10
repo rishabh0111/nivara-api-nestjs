@@ -28,6 +28,19 @@ export class SchedulerHeartbeat {
   }
 
   /**
+   * The interval a tick is now running at, keeping its last beat.
+   *
+   * Readiness judges each tick against its own interval, so when the ticks
+   * back off while idle the threshold has to move with them — otherwise a
+   * quiet evening would read as a stalled scheduler.
+   */
+  retime(name: string, intervalMs: number): void {
+    const tick = this.ticks.get(name);
+
+    if (tick) tick.intervalMs = intervalMs;
+  }
+
+  /**
    * Recorded *after* a tick completes, never before it starts. A pulse written
    * on entry would keep beating for a tick that hangs forever, which is the
    * stall most worth reporting.

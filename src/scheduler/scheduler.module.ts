@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { IdempotencyRetentionSweep } from '../idempotency/idempotency-retention.sweep';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
 import { DwellSweep } from '../sla/dwell.sweep';
@@ -15,6 +15,8 @@ import { DrainerService } from './drainer.service';
 import { JOB_HANDLERS, JobHandlerRegistry } from './job-handler';
 import { JobQueueModule } from './job-queue.module';
 
+import { SchedulerActivity } from './scheduler-activity';
+import { SchedulerActivityMiddleware } from './scheduler-activity.middleware';
 import { SchedulerHeartbeat } from './scheduler-heartbeat';
 import { SchedulerTicker } from './scheduler-ticker.service';
 import { SWEEPS, SweeperService } from './sweeper.service';
@@ -88,6 +90,8 @@ import { SWEEPS, SweeperService } from './sweeper.service';
     DrainerService,
     SweeperService,
     SchedulerHeartbeat,
+    SchedulerActivity,
+    SchedulerActivityMiddleware,
     SchedulerTicker,
   ],
   exports: [
@@ -102,4 +106,12 @@ import { SWEEPS, SweeperService } from './sweeper.service';
     SchedulerHeartbeat,
   ],
 })
-export class SchedulerModule {}
+export class SchedulerModule implements NestModule {
+  /**
+   * Every route feeds the idle clock (the middleware itself skips the health
+   * probes), so the ticks back off only when nobody is using the API.
+   */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(SchedulerActivityMiddleware).forRoutes('{*splat}');
+  }
+}

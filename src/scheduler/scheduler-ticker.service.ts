@@ -6,8 +6,16 @@ import {
 } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { DrainerService } from './drainer.service';
+import { IDLE_TICK_MS, SchedulerActivity } from './scheduler-activity';
 import { SchedulerHeartbeat } from './scheduler-heartbeat';
 import { SweeperService } from './sweeper.service';
+
+interface Loop {
+  name: string;
+  activeMs: number;
+  tick: () => Promise<unknown>;
+  timer: NodeJS.Timeout | null;
+}
 
 /**
  * The two tick rates.
@@ -52,22 +60,28 @@ export const SLOW_TICK = 'slow-sweep';
  * SQL rather than on being the only runner. Turning the flag off on the web
  * instances and on for one worker is the whole migration.
  *
- * Note what this class does *not* contain: any logic. It starts timers, records
- * heartbeats, and stops. Both ticks stay directly invokable precisely because
- * nothing worth testing lives in here.
+ * One rule beyond starting timers: when nobody has used the API for
+ * `IDLE_AFTER_MS`, both ticks back off to `IDLE_TICK_MS` so the free database
+ * can suspend between them, and the first real request wakes them at once
+ * (`SchedulerActivity`). Each timer is re-armed per tick rather than fixed, which
+ * is the only reason this is `setTimeout` and not `setInterval`; the next tick
+ * is still armed before the current one runs, so a long tick overlaps the next
+ * exactly as it did before.
  */
 @Injectable()
 export class SchedulerTicker
   implements OnApplicationBootstrap, OnApplicationShutdown
 {
   private readonly logger = new Logger(SchedulerTicker.name);
-  private readonly timers: NodeJS.Timeout[] = [];
+  private readonly loops: Loop[] = [];
+  private stopped = false;
 
   constructor(
     private readonly config: AppConfigService,
     private readonly heartbeat: SchedulerHeartbeat,
     private readonly drainer: DrainerService,
     private readonly sweeper: SweeperService,
+    private readonly activity: SchedulerActivity,
   ) {}
 
   /**
@@ -84,17 +98,62 @@ export class SchedulerTicker
       return;
     }
 
+    this.activity.whenWoken(() => this.wake());
+
     await this.start(FAST_TICK, FAST_TICK_MS, () => this.drainer.tick());
     await this.start(SLOW_TICK, SLOW_TICK_MS, () => this.sweeper.tick());
 
     this.logger.log(
-      `Scheduler is on — draining every ${FAST_TICK_MS}ms, sweeping every ${SLOW_TICK_MS}ms`,
+      `Scheduler is on — draining every ${FAST_TICK_MS}ms, sweeping every ${SLOW_TICK_MS}ms, both every ${IDLE_TICK_MS}ms while idle`,
     );
   }
 
   onApplicationShutdown(): void {
-    for (const timer of this.timers) clearInterval(timer);
-    this.timers.length = 0;
+    this.stopped = true;
+    for (const loop of this.loops) {
+      if (loop.timer) clearTimeout(loop.timer);
+      loop.timer = null;
+    }
+    this.loops.length = 0;
+  }
+
+  /**
+   * Arms the next tick at the rate the API's use calls for, and tells the
+   * heartbeat, so readiness judges the tick against the interval it is
+   * actually running at.
+   */
+  private arm(loop: Loop): void {
+    if (this.stopped) return;
+
+    const intervalMs = this.activity.isIdle()
+      ? Math.max(loop.activeMs, IDLE_TICK_MS)
+      : loop.activeMs;
+
+    this.heartbeat.retime(loop.name, intervalMs);
+
+    loop.timer = setTimeout(() => {
+      // The next one first, then this one: a tick that runs long overlaps the
+      // next rather than delaying it, as an interval timer would have.
+      this.arm(loop);
+      void this.runOnce(loop.name, loop.tick);
+    }, intervalMs);
+
+    // The timer must not be a reason the process stays alive. Without this,
+    // a script that finished its work would hang on a timer that never ends.
+    loop.timer.unref();
+  }
+
+  /**
+   * The first real request after an idle spell: run both ticks now, so
+   * whatever a person just queued is drained in seconds, then return to the
+   * active rates.
+   */
+  private wake(): void {
+    for (const loop of this.loops) {
+      if (loop.timer) clearTimeout(loop.timer);
+      loop.timer = null;
+      void this.runOnce(loop.name, loop.tick).then(() => this.arm(loop));
+    }
   }
 
   private async start(
@@ -106,15 +165,9 @@ export class SchedulerTicker
     // fires reports as stalled rather than as absent.
     this.heartbeat.register(name, intervalMs);
 
-    const timer = setInterval(() => {
-      void this.runOnce(name, tick);
-    }, intervalMs);
-
-    // The interval must not be a reason the process stays alive. Without this,
-    // a script that finished its work would hang on a timer that never ends.
-    timer.unref();
-
-    this.timers.push(timer);
+    const loop: Loop = { name, activeMs: intervalMs, tick, timer: null };
+    this.loops.push(loop);
+    this.arm(loop);
 
     // And once immediately, rather than waiting out the first interval. Two
     // reasons, and the second is the load-bearing one: a restart should pick up
