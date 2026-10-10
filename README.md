@@ -10,9 +10,9 @@
 
 [Live](https://nivara-api-nestjs.onrender.com/health)  ·
 [OpenAPI docs](https://nivara-api-nestjs.onrender.com/docs)  ·
-[The product](https://nivara-landing-iota.vercel.app)
+[The product](https://nivara-desk.vercel.app)
 
-The API behind [Nivara Desk](https://nivara-landing-iota.vercel.app): a multitenant, two-sided
+The API behind [Nivara Desk](https://nivara-desk.vercel.app): a multitenant, two-sided
 customer-support helpdesk. NestJS, Postgres, Prisma, Redis.
 
 Every record belongs to exactly one tenant, and tenant identity is always server-determined — read
